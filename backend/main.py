@@ -1,15 +1,20 @@
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from database import get_db
 
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.1.0",
+    version = "0.2.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
-def health_check():
-    """Проверка статуса сервера"""
-    return {"status":"ok"}
+def health_check(db: Session = Depends(get_db)):
+    """Проверка статуса сервера и доступа к БД"""
+    db.execute(text("SELECT 1"))
+    return {"status": "ok", "database": "ok"}
 
 @app.get("/api/stage-types", tags=["Словари"])
 def get_stage_types():
