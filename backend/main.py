@@ -2,7 +2,10 @@ from fastapi import Depends, FastAPI
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from database import get_db
+import models
+from database import get_db, Base, engine
+
+Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title = "CampusThesis API",
