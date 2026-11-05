@@ -13,7 +13,7 @@ class Role(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(20), nullable=False, unique=True) #student/supervisor
     
-class Departament(Base):
+class Department(Base):
     __tablename__ = "departments"
 
     id = Column(Integer, primary_key=True)
@@ -35,7 +35,7 @@ class StageType(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(100), nullable=False)
     order_num = Column(Integer, nullable=False, unique=True)
-    defauld_days = Column(Integer, nullable=False)
+    default_days = Column(Integer, nullable=False)
 
 # Пользователи
 

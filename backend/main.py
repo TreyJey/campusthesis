@@ -10,7 +10,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.2.0",
+    version = "0.3.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -20,14 +20,20 @@ def health_check(db: Session = Depends(get_db)):
     return {"status": "ok", "database": "ok"}
 
 @app.get("/api/stage-types", tags=["Словари"])
-def get_stage_types():
-    """Список этапов ВКР по порядку. Пока без базы(тест)."""
+def get_stage_types(db: Session = Depends(get_db)):
+    """Список этапов ВКР по порядку."""
+    stages = db.query(models.StageType).order_by(models.StageType.order_num).all()
     return [
-        {"id": 1, "name": "План", "order_num": 1, "default_days": 14},
-        {"id": 2, "name": "Первая глава", "order_num": 2, "default_days": 30},
-        {"id": 3, "name": "Вторая глава", "order_num": 3, "default_days": 30},
-        {"id": 4, "name": "Полный текст", "order_num": 4, "default_days": 30},
-        {"id": 5, "name": "Нормоконтроль", "order_num": 5, "default_days": 10},
-        {"id": 6, "name": "Предзащита", "order_num": 6, "default_days": 14},
-        {"id": 7, "name": "Защита", "order_num": 7, "default_days": 14},
+        {"id": s.id, "name": s.name, "order_num": s.order_num, "default_days": s.default_days}
+        for s in stages
+    ]
+
+
+@app.get("/api/directions", tags=["Словари"])
+def get_directions(db: Session = Depends(get_db)):
+    """Список направлений подготовки с кафедрами."""
+    directions = db.query(models.Direction).all()
+    return [
+        {"id": d.id, "code": d.code, "name": d.name, "department": d.department.name}
+        for d in directions
     ]
