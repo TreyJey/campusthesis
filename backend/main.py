@@ -1,16 +1,18 @@
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
+from pydantic import BaseModel
 
 import models
 from database import get_db, Base, engine
+from security import hash_password
 
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.4.0",
+    version = "0.5.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -38,6 +40,7 @@ def get_directions(db: Session = Depends(get_db)):
         for d in directions
     ]
 
+# Темы
 # функция, чтобы не дублировать в двух следующих геттерах
 def topic_to_dict(topic: models.Topic) -> dict:
     """Превращает тему из базы в словарь для ответа API"""
@@ -79,3 +82,30 @@ def get_topic(topic_id: int, db: Session = Depends(get_db)):
     if topic is None:
         raise HTTPException(status_code=404, detail="Тема не найдена")
     return topic_to_dict(topic)
+
+# Вход
+class LoginRequest(BaseModel):
+    """Тело запроса на вход."""
+    login: str
+    password: str
+
+
+@app.post("/api/login", tags=["Вход"])
+def login(data: LoginRequest, db: Session = Depends(get_db)):
+    """Проверяет логин и пароль. Возвращает информацию пользователя."""
+    user = db.query(models.User).filter(models.User.login == data.login).first()
+    if user is None or user.password_hash != hash_password(data.password):
+        raise HTTPException(status_code=401, detail="Неверный логин или пароль")
+
+    if user.role.name == "student":
+        profile = db.query(models.StudentProfile).filter(models.StudentProfile.user_id == user.id).first()
+    else:
+        profile = db.query(models.SupervisorProfile).filter(models.SupervisorProfile.user_id == user.id).first()
+
+    return {
+        "user_id": user.id,
+        "login": user.login,
+        "full_name": user.full_name,
+        "role": user.role.name,
+        "profile_id": profile.id,
+    }                                   # переделать на JWT токен если будет время ! ! !

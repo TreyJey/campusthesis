@@ -2,18 +2,13 @@
 
 Run: python seed.py
 """
-import hashlib
 
 from database import Base, SessionLocal, engine
 from models import (
     Department, Direction, Role, StageType, StudentProfile,
     SupervisorProfile, Topic, User,
 )
-
-# пока sha, если будет врремя - то на bcrypt перенести
-def hash_password(password: str) -> str:
-    return hashlib.sha256(password.encode()).hexdigest()
-
+from security import hash_password
 
 def seed():
     Base.metadata.drop_all(bind=engine)
