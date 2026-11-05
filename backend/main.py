@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.5.0",
+    version = "0.6.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -109,3 +109,54 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "role": user.role.name,
         "profile_id": profile.id,
     }                                   # переделать на JWT токен если будет время ! ! !
+
+# Заявки на темы
+class TopicRequestCreate(BaseModel):
+    """Тело запроса на подачу заявки."""
+    student_id: int
+    topic_id: int
+    message: str | None = None
+
+
+@app.post("/api/topic-requests", status_code=201, tags=["Заявки"])
+def create_topic_request(data: TopicRequestCreate, db: Session = Depends(get_db)):
+    """Студент подаёт заявку руководителю на выбранную тему."""
+    student = db.get(models.StudentProfile, data.student_id)
+    if student is None:
+        raise HTTPException(status_code=404, detail="Студент не найден")
+
+    topic = db.get(models.Topic, data.topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="Тема не найдена")
+    if not topic.is_available:
+        raise HTTPException(status_code=400, detail="Тема уже закреплена за другим студентом")
+
+    has_thesis = db.query(models.Thesis).filter(models.Thesis.student_id == student.id).first()
+    if has_thesis is not None:
+        raise HTTPException(status_code=400, detail="У студента уже есть закреплённая тема")
+
+    duplicate = (
+        db.query(models.TopicRequest)
+        .filter(
+            models.TopicRequest.student_id == student.id,
+            models.TopicRequest.topic_id == topic.id,
+            models.TopicRequest.status == "pending",
+        )
+        .first()
+    )
+    if duplicate is not None:
+        raise HTTPException(status_code=400, detail="Заявка на эту тему уже подана и ждёт решения")
+
+    request = models.TopicRequest(student_id=student.id, topic_id=topic.id, message=data.message)
+    db.add(request)
+    db.commit()
+    db.refresh(request)
+
+    return {
+        "id": request.id,
+        "topic_id": request.topic_id,
+        "student_id": request.student_id,
+        "message": request.message,
+        "status": request.status,
+        "created_at": request.created_at,
+    }
