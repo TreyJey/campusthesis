@@ -1,3 +1,5 @@
+from datetime import date, datetime, timedelta
+from typing import Literal
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -12,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.7.1",
+    version = "0.8.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -214,3 +216,85 @@ def get_supervisor_requests(
         query = query.filter(models.TopicRequest.status == status)
     requests = query.order_by(models.TopicRequest.created_at.desc()).all()
     return [request_to_dict(r) for r in requests]
+
+class TopicRequestDecision(BaseModel):
+    """Тело запроса на решение по заявке."""
+    supervisor_id: int
+    decision: Literal["approved", "rejected"]
+    comment: str | None = None
+
+
+@app.patch("/api/topic-requests/{request_id}", tags=["Заявки"])
+def decide_topic_request(request_id: int, data: TopicRequestDecision, db: Session = Depends(get_db)):
+    """Руководитель одобряет или отклоняет заявку.
+
+    При одобрении: создаётся ВКР и 7 этапов с дедлайнами, тема уходит из каталога,
+    остальные заявки на эту тему и другие заявки студента отклоняются.
+    """
+    req = db.get(models.TopicRequest, request_id)
+    if req is None:
+        raise HTTPException(status_code=404, detail="Заявка не найдена")
+    if req.topic.supervisor_id != data.supervisor_id:
+        raise HTTPException(status_code=403, detail="Это заявка на тему другого руководителя")
+    if req.status != "pending":
+        raise HTTPException(status_code=400, detail="Решение по заявке уже принято")
+
+    supervisor = req.topic.supervisor
+    if data.decision == "approved":
+        if not req.topic.is_available:
+            raise HTTPException(status_code=400, detail="Тема уже закреплена за другим студентом")
+        has_thesis = db.query(models.Thesis).filter(models.Thesis.student_id == req.student_id).first()
+        if has_thesis is not None:
+            raise HTTPException(status_code=400, detail="У студента уже есть закреплённая тема")
+        taken = db.query(models.Thesis).filter(models.Thesis.supervisor_id == supervisor.id).count()
+        if taken >= supervisor.max_students:
+            raise HTTPException(status_code=400, detail="У руководителя не осталось мест")
+
+    # Все проверки пройдены - меняем данные
+    now = datetime.now()
+    req.status = data.decision
+    req.supervisor_comment = data.comment
+    req.decided_at = now
+
+    thesis = None
+    if data.decision == "approved":
+        # 1. ВКР
+        thesis = models.Thesis(student_id=req.student_id, topic_id=req.topic_id, supervisor_id=supervisor.id)
+        db.add(thesis)
+        db.flush()
+
+        # 2. Семь этапов: дедлайны цепочкой, открыт пока токо первый
+        deadline = date.today()
+        stage_types = db.query(models.StageType).order_by(models.StageType.order_num).all()
+        for stage_type in stage_types:
+            deadline = deadline + timedelta(days=stage_type.default_days)
+            db.add(models.ThesisStage(
+                thesis_id=thesis.id,
+                stage_type_id=stage_type.id,
+                deadline=deadline,
+                status="open" if stage_type.order_num == 1 else "locked",
+            ))
+
+        # 3. Тема уходит из каталога
+        req.topic.is_available = False
+
+        # 4. Остальные ожидающие заявки на эту тему и другие заявки студента отклоняются
+        others = (
+            db.query(models.TopicRequest)
+            .filter(
+                models.TopicRequest.id != req.id,
+                models.TopicRequest.status == "pending",
+                (models.TopicRequest.topic_id == req.topic_id) | (models.TopicRequest.student_id == req.student_id),
+            )
+            .all()
+        )
+        for other in others:
+            other.status = "rejected"
+            other.supervisor_comment = "Тема или студент уже закреплены"
+            other.decided_at = now
+
+    db.commit()
+
+    result = request_to_dict(req)
+    result["thesis_id"] = thesis.id if thesis else None
+    return result
