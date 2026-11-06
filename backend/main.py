@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.7.0",
+    version = "0.7.1",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -130,6 +130,8 @@ def create_topic_request(data: TopicRequestCreate, db: Session = Depends(get_db)
         raise HTTPException(status_code=404, detail="Тема не найдена")
     if not topic.is_available:
         raise HTTPException(status_code=400, detail="Тема уже закреплена за другим студентом")
+    if topic.direction_id != student.direction_id:
+        raise HTTPException(status_code=400, detail="Тема относится к другому направлению подготовки")
 
     has_thesis = db.query(models.Thesis).filter(models.Thesis.student_id == student.id).first()
     if has_thesis is not None:
