@@ -12,7 +12,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.6.0",
+    version = "0.7.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -160,3 +160,55 @@ def create_topic_request(data: TopicRequestCreate, db: Session = Depends(get_db)
         "status": request.status,
         "created_at": request.created_at,
     }
+
+def request_to_dict(req: models.TopicRequest) -> dict:
+    """Превращает заявку в словарь с темой, студентом и руководителем."""
+    return {
+        "id": req.id,
+        "status": req.status,
+        "message": req.message,
+        "supervisor_comment": req.supervisor_comment,
+        "created_at": req.created_at,
+        "decided_at": req.decided_at,
+        "topic": {"id": req.topic.id, "title": req.topic.title},
+        "student": {
+            "id": req.student.id,
+            "full_name": req.student.user.full_name,
+            "group_name": req.student.group_name,
+        },
+        "supervisor": {"id": req.topic.supervisor.id, "full_name": req.topic.supervisor.user.full_name},
+    }
+
+
+@app.get("/api/students/{student_id}/requests", tags=["Заявки"])
+def get_student_requests(student_id: int, db: Session = Depends(get_db)):
+    """Все заявки студента со статусами, сорт - новые сверху."""
+    if db.get(models.StudentProfile, student_id) is None:
+        raise HTTPException(status_code=404, detail="Студент не найден")
+    requests = (
+        db.query(models.TopicRequest)
+        .filter(models.TopicRequest.student_id == student_id)
+        .order_by(models.TopicRequest.created_at.desc())
+        .all()
+    )
+    return [request_to_dict(r) for r in requests]
+
+
+@app.get("/api/supervisors/{supervisor_id}/requests", tags=["Заявки"])
+def get_supervisor_requests(
+    supervisor_id: int,
+    status: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Заявки на темы руководителя. Можно отфильтровать по статусу: pending, approved, rejected."""
+    if db.get(models.SupervisorProfile, supervisor_id) is None:
+        raise HTTPException(status_code=404, detail="Руководитель не найден")
+    query = (
+        db.query(models.TopicRequest)
+        .join(models.Topic)
+        .filter(models.Topic.supervisor_id == supervisor_id)
+    )
+    if status is not None:
+        query = query.filter(models.TopicRequest.status == status)
+    requests = query.order_by(models.TopicRequest.created_at.desc()).all()
+    return [request_to_dict(r) for r in requests]
