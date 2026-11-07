@@ -17,7 +17,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.9.3",
+    version = "0.9.4",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -330,7 +330,7 @@ def decide_topic_request(request_id: int, data: TopicRequestDecision, db: Sessio
             other.supervisor_comment = "Тема или студент уже закреплены"
             other.decided_at = now
             notify(db, other.student.user, "status",
-                   f'Заявка на тему "{other.topic.title}" отклонена: тема или студент уже закреплены", "/student.html')
+                   f'Заявка на тему "{other.topic.title}" отклонена: тема или студент уже закреплены', "/student.html")
 
     decision = "одобрена" if data.decision == "approved" else "отклонена"
     log_action(db, supervisor.user_id, "request_decided",
@@ -577,7 +577,191 @@ def review_stage(stage_id: int, data: ReviewCreate, db: Session = Depends(get_db
 
     result = stage_to_dict(stage)
     result["next_stage_id"] = next_stage.id if next_stage else None
-    return result                                                               
+    return result
 
-                                                                                        # дальше лк сделать, не забыть отправить остров + забрать заказ в 9
-                                                                                        # -> админка -> фильтры -> рейтинг -> добавить в сид реалистичные данные -> бэк готов
+
+# Личный кабинет: профиль, настройки, уведомления, история
+def get_user_or_404(db: Session, user_id: int) -> models.User:
+    """Находит пользователя или сразу отвечает 404."""
+    user = db.get(models.User, user_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Пользователь не найден")
+    return user
+
+
+@app.get("/api/users/{user_id}/profile", tags=["Личный кабинет"])
+def get_profile(user_id: int, db: Session = Depends(get_db)):
+    """Профиль пользователя: общие данные, данные по роли и настройки уведомлений."""
+    user = get_user_or_404(db, user_id)
+    result = {
+        "user_id": user.id,
+        "login": user.login,
+        "full_name": user.full_name,
+        "email": user.email,
+        "role": user.role.name,
+        "created_at": user.created_at,
+        "settings": {
+            "notify_status": user.notify_status,
+            "notify_comments": user.notify_comments,
+            "notify_deadlines": user.notify_deadlines,
+        },
+    }
+    if user.role.name == "student":
+        profile = db.query(models.StudentProfile).filter(models.StudentProfile.user_id == user.id).first()
+        result["student"] = {
+            "profile_id": profile.id,
+            "group_name": profile.group_name,
+            "course": profile.course,
+            "direction": f"{profile.direction.code} {profile.direction.name}",
+        }
+    elif user.role.name == "supervisor":
+        profile = db.query(models.SupervisorProfile).filter(models.SupervisorProfile.user_id == user.id).first()
+        result["supervisor"] = {
+            "profile_id": profile.id,
+            "position": profile.position,
+            "department": profile.department.name,
+            "max_students": profile.max_students,
+        }
+    return result
+
+
+class ProfileUpdate(BaseModel):
+    """Что можно поменять в профиле"""
+    email: str | None = None
+    notify_status: bool | None = None
+    notify_comments: bool | None = None
+    notify_deadlines: bool | None = None
+
+
+@app.patch("/api/users/{user_id}/profile", tags=["Личный кабинет"])
+def update_profile(user_id: int, data: ProfileUpdate, db: Session = Depends(get_db)):
+    """Меняет почту и настройки уведомлений."""
+    user = get_user_or_404(db, user_id)
+    if data.email is not None:
+        if "@" not in data.email:
+            raise HTTPException(status_code=400, detail="Некорректный адрес почты")
+        user.email = data.email
+    if data.notify_status is not None:
+        user.notify_status = data.notify_status
+    if data.notify_comments is not None:
+        user.notify_comments = data.notify_comments
+    if data.notify_deadlines is not None:
+        user.notify_deadlines = data.notify_deadlines
+    log_action(db, user.id, "profile_updated", "Изменены настройки профиля")
+    db.commit()
+    return get_profile(user_id, db)
+
+
+class PasswordChange(BaseModel):
+    """Тело запроса на смену пароля."""
+    old_password: str
+    new_password: str = Field(min_length=6)
+
+
+@app.post("/api/users/{user_id}/password", tags=["Личный кабинет"])
+def change_password(user_id: int, data: PasswordChange, db: Session = Depends(get_db)):
+    """Смена пароля: нужен старый пароль, новый — не короче 6 символов."""
+    user = get_user_or_404(db, user_id)
+    if user.password_hash != hash_password(data.old_password):
+        raise HTTPException(status_code=400, detail="Старый пароль указан неверно")
+    user.password_hash = hash_password(data.new_password)
+    log_action(db, user.id, "password_changed", "Изменён пароль")
+    db.commit()
+    return {"status": "ok"}
+
+
+DEADLINE_WARNING_DAYS = 3  # за сколько дней напоминать о дедлайне
+
+
+def create_deadline_reminders(db: Session, user: models.User) -> None:
+    """Напоминания студенту о близком или просроченном дедлайне текущего этапа (без повторов)."""
+    if user.role.name != "student":
+        return
+    profile = db.query(models.StudentProfile).filter(models.StudentProfile.user_id == user.id).first()
+    thesis = db.query(models.Thesis).filter(models.Thesis.student_id == profile.id).first()
+    if thesis is None:
+        return
+    stage = current_stage(thesis)
+    if stage is None or stage.status not in ("open", "revision"):
+        return  # всё сдано или этап на проверке — напоминать не о чем
+
+    days_left = (stage.deadline - date.today()).days
+    if days_left < 0:
+        text = f'Дедлайн этапа "{stage.stage_type.name}" прошёл {stage.deadline:%d.%m.%Y}'
+    elif days_left <= DEADLINE_WARNING_DAYS:
+        text = f'До дедлайна этапа "{stage.stage_type.name}" осталось дней: {days_left}'
+    else:
+        return  # время еще не пришло
+
+    # already - защита от дублирования уведомлений
+    already = (
+        db.query(models.Notification)
+        .filter(models.Notification.user_id == user.id, models.Notification.text == text)
+        .first()
+    )
+    if already is None:
+        notify(db, user, "deadline", text, "/student.html")
+
+
+@app.get("/api/users/{user_id}/notifications", tags=["Личный кабинет"])
+def get_notifications(user_id: int, unread_only: bool = False, db: Session = Depends(get_db)):
+    """Уведомления поль404зователя, новые сверху, и число непрочитанных."""
+    user = get_user_or_404(db, user_id)
+    create_deadline_reminders(db, user)
+    db.commit()
+
+    query = db.query(models.Notification).filter(models.Notification.user_id == user_id)
+    if unread_only:
+        query = query.filter(models.Notification.is_read == False)
+    notifications = query.order_by(models.Notification.created_at.desc()).all()
+    unread_count = (
+        db.query(models.Notification)
+        .filter(models.Notification.user_id == user_id, models.Notification.is_read == False)
+        .count()
+    )
+    return {
+        "unread_count": unread_count,
+        "items": [
+            {"id": n.id, "type": n.type, "text": n.text, "link": n.link, "is_read": n.is_read,
+             "created_at": n.created_at}
+            for n in notifications
+        ],
+    }
+
+
+@app.patch("/api/users/{user_id}/notifications/{notification_id}/read", tags=["Личный кабинет"])
+def mark_notification_read(user_id: int, notification_id: int, db: Session = Depends(get_db)):
+    """Отмечает одно уведомление прочитанным."""
+    notification = db.get(models.Notification, notification_id)
+    if notification is None or notification.user_id != user_id:
+        raise HTTPException(status_code=404, detail="Уведомление не найдено")
+    notification.is_read = True
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.post("/api/users/{user_id}/notifications/read-all", tags=["Личный кабинет"])
+def mark_all_notifications_read(user_id: int, db: Session = Depends(get_db)):
+    """Отмечает все уведомления пользователя прочитанными."""
+    get_user_or_404(db, user_id)
+    count = (
+        db.query(models.Notification)
+        .filter(models.Notification.user_id == user_id, models.Notification.is_read == False)
+        .update({"is_read": True})
+    )
+    db.commit()
+    return {"marked": count}
+
+
+@app.get("/api/users/{user_id}/history", tags=["Личный кабинет"])
+def get_history(user_id: int, limit: int = 50, db: Session = Depends(get_db)):
+    """История действий пользователя, новые сверху."""
+    get_user_or_404(db, user_id)
+    records = (
+        db.query(models.ActivityLog)
+        .filter(models.ActivityLog.user_id == user_id)
+        .order_by(models.ActivityLog.created_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [{"id": r.id, "action": r.action, "text": r.text, "created_at": r.created_at} for r in records]
