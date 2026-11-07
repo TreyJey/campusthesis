@@ -705,7 +705,7 @@ def create_deadline_reminders(db: Session, user: models.User) -> None:
 
 @app.get("/api/users/{user_id}/notifications", tags=["Личный кабинет"])
 def get_notifications(user_id: int, unread_only: bool = False, db: Session = Depends(get_db)):
-    """Уведомления поль404зователя, новые сверху, и число непрочитанных."""
+    """Уведомления пользователя, новые сверху, и число непрочитанных."""
     user = get_user_or_404(db, user_id)
     create_deadline_reminders(db, user)
     db.commit()
@@ -765,3 +765,77 @@ def get_history(user_id: int, limit: int = 50, db: Session = Depends(get_db)):
         .all()
     )
     return [{"id": r.id, "action": r.action, "text": r.text, "created_at": r.created_at} for r in records]
+
+
+# Админка
+def require_admin(db: Session, admin_id: int) -> models.User:
+    """Проверяет, является ли пользователь админом(методистом)"""
+    admin = get_user_or_404(db, admin_id)
+    if admin.role.name != "admin":
+        raise HTTPException(status_code=403, detail="У вас нет прав администратора")
+    return admin
+
+
+@app.get("/api/admin/theses", tags=["Админ"])
+def get_admin_theses(admin_id: int, db: Session = Depends(get_db)):
+    """Список всех ВКР."""
+    require_admin(db, admin_id)
+    theses = db.query(models.Thesis).all()
+
+    result = []
+    for thesis in theses:
+        current = current_stage(thesis)
+        result.append({
+            "id": thesis.id,
+            "status": thesis.status,
+            "topic": {"id": thesis.topic.id, "title": thesis.topic.title},
+            "student": {
+                "id": thesis.student.id,
+                "full_name": thesis.student.user.full_name,
+                "group_name": thesis.student.group_name
+            },
+            "supervisor": {
+                "id": thesis.supervisor.id,
+                "full_name": thesis.supervisor.user.full_name,
+                "department": thesis.supervisor.department.name
+            },
+            "current_stage": stage_to_dict(current) if current else None,
+        })
+    return {"theses": result}
+
+
+class DeadlineChange(BaseModel):
+    """Тело для смены дедлайна."""
+    admin_id: int
+    new_deadline: date
+    reason: str | None = None
+
+
+@app.patch("/api/admin/stages/{stage_id}/deadline", tags=["Админ"])
+def change_deadline(data: DeadlineChange, stage_id: int, db: Session = Depends(get_db)):
+    """Изменить дедлайн, можно уквзвть причину"""
+    require_admin(db, data.admin_id)
+    stage = db.get(models.ThesisStage, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Этап не найден")
+    if stage.status == "approved":
+        raise HTTPException(status_code=400, detail="Этап уже пройден, дедлайн менять нет смысла")
+    if stage.deadline >= data.new_deadline:
+        raise HTTPException(status_code=400, detail="Нельзя установить дедлайн на дату раньше или равную текущему")
+    deadline_before_changes = stage.deadline
+    stage.deadline = data.new_deadline
+    thesis = db.get(models.Thesis, stage.thesis_id)
+    reason_text = ""
+    if data.reason:
+        reason_text = f' по причине: "{data.reason}"'
+    log_action(db, data.admin_id, "deadline_changed",
+            f'Дедлайн этапа {stage.stage_type.name} студента {thesis.student.user.full_name} '
+            f'изменен{reason_text}. Был {deadline_before_changes:%d.%m.%Y}, стал {stage.deadline:%d.%m.%Y}')
+    notify(db, thesis.student.user, "deadline", 
+           f'Дедлайн этапа {stage.stage_type.name} был перенесен с {deadline_before_changes:%d.%m.%Y} на '
+           f'{stage.deadline:%d.%m.%Y}{reason_text}', "/student.html")
+    db.commit()
+
+    result = stage_to_dict(stage)
+    return result
+
