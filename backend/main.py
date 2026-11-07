@@ -77,6 +77,7 @@ def topic_to_dict(topic: models.Topic) -> dict:
         "description": topic.description,
         "requirements": topic.requirements,
         "is_available": topic.is_available,
+        "is_archived": topic.is_archived,
         "direction": {"id": topic.direction.id, "code": topic.direction.code, "name": topic.direction.name},
         "supervisor": {
             "id": topic.supervisor.id,
@@ -829,13 +830,118 @@ def change_deadline(data: DeadlineChange, stage_id: int, db: Session = Depends(g
     if data.reason:
         reason_text = f' по причине: "{data.reason}"'
     log_action(db, data.admin_id, "deadline_changed",
-            f'Дедлайн этапа {stage.stage_type.name} студента {thesis.student.user.full_name} '
+            f'Дедлайн этапа "{stage.stage_type.name}" студента {thesis.student.user.full_name} '
             f'изменен{reason_text}. Был {deadline_before_changes:%d.%m.%Y}, стал {stage.deadline:%d.%m.%Y}')
     notify(db, thesis.student.user, "deadline", 
-           f'Дедлайн этапа {stage.stage_type.name} был перенесен с {deadline_before_changes:%d.%m.%Y} на '
+           f'Дедлайн этапа "{stage.stage_type.name}" был перенесен с {deadline_before_changes:%d.%m.%Y} на '
            f'{stage.deadline:%d.%m.%Y}{reason_text}', "/student.html")
     db.commit()
 
     result = stage_to_dict(stage)
     return result
+
+
+# Админ: управление темами
+@app.get("/api/admin/topics", tags=["Админ"])
+def get_admin_topics(admin_id: int, db: Session = Depends(get_db)):
+    """Все темы: свободные, занятые и архивные. У занятых указан студент."""
+    require_admin(db, admin_id)
+    topics = db.query(models.Topic).order_by(models.Topic.title).all()
+
+    result = []
+    for topic in topics:
+        item = topic_to_dict(topic)
+        thesis = db.query(models.Thesis).filter(models.Thesis.topic_id == topic.id).first()
+        item["student"] = thesis.student.user.full_name if thesis else None
+        result.append(item)
+    return {"topics": result}
+
+
+class TopicCreate(BaseModel):
+    """Тело запроса на новую тему."""
+    admin_id: int
+    title: str = Field(min_length=10, max_length=300)
+    description: str = Field(min_length=10)
+    requirements: str | None = None
+    supervisor_id: int
+    direction_id: int
+
+
+@app.post("/api/admin/topics", status_code=201, tags=["Админ"])
+def create_topic(data: TopicCreate, db: Session = Depends(get_db)):
+    """Методист добавляет тему в каталог."""
+    require_admin(db, data.admin_id)
+    supervisor = db.get(models.SupervisorProfile, data.supervisor_id)
+    if supervisor is None:
+        raise HTTPException(status_code=404, detail="Руководитель не найден")
+    if db.get(models.Direction, data.direction_id) is None:
+        raise HTTPException(status_code=404, detail="Направление не найдено")
+
+    topic = models.Topic(
+        title=data.title,
+        description=data.description,
+        requirements=data.requirements,
+        supervisor_id=data.supervisor_id,
+        direction_id=data.direction_id,
+    )
+    db.add(topic)
+    log_action(db, data.admin_id, "topic_created", f'Добавлена тема "{data.title}"')
+    notify(db, supervisor.user, "status", f'Методист добавил вашу тему "{data.title}" в каталог', "/supervisor.html")
+    db.commit()
+    db.refresh(topic)
+    return topic_to_dict(topic)
+
+
+class TopicUpdate(BaseModel):
+    """Что можно поменять в теме. Все поля необязательные, кроме admin_id."""
+    admin_id: int
+    title: str | None = Field(default=None, min_length=10, max_length=300)
+    description: str | None = Field(default=None, min_length=10)
+    requirements: str | None = None
+    supervisor_id: int | None = None
+    direction_id: int | None = None
+    is_archived: bool | None = None
+
+
+@app.patch("/api/admin/topics/{topic_id}", tags=["Админ"])
+def update_topic(topic_id: int, data: TopicUpdate, db: Session = Depends(get_db)):
+    """Методист меняет тему или убирает её в архив (is_archived = true)."""
+    require_admin(db, data.admin_id)
+    topic = db.get(models.Topic, topic_id)
+    if topic is None:
+        raise HTTPException(status_code=404, detail="Тема не найдена")
+
+    # У занятой темы нельзя менять руководителя и направление тк по ней уже идёт ВКР
+    if not topic.is_available and (data.supervisor_id is not None or data.direction_id is not None):
+        raise HTTPException(status_code=400,
+                             detail="Тема закреплена за студентом: руководителя и направление менять нельзя")
+    if data.supervisor_id is not None and db.get(models.SupervisorProfile, data.supervisor_id) is None:
+        raise HTTPException(status_code=404, detail="Руководитель не найден")
+    if data.direction_id is not None and db.get(models.Direction, data.direction_id) is None:
+        raise HTTPException(status_code=404, detail="Направление не найдено")
+
+    # Меняем только переданные поля
+    if data.title is not None:
+        topic.title = data.title
+    if data.description is not None:
+        topic.description = data.description
+    if data.requirements is not None:
+        topic.requirements = data.requirements
+    if data.supervisor_id is not None:
+        topic.supervisor_id = data.supervisor_id
+    if data.direction_id is not None:
+        topic.direction_id = data.direction_id
+    if data.is_archived is not None:
+        topic.is_archived = data.is_archived
+
+    if data.is_archived is True:
+        action_text = f'Тема "{topic.title}" убрана в архив'
+    elif data.is_archived is False:
+        action_text = f'Тема "{topic.title}" возвращена из архива'
+    else:
+        action_text = f'Изменена тема "{topic.title}"'
+    log_action(db, data.admin_id, "topic_updated", action_text)
+    db.commit()
+    db.refresh(topic)
+    return topic_to_dict(topic)
 
