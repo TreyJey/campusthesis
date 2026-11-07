@@ -48,6 +48,9 @@ class User(Base):
     full_name = Column(String(200), nullable=False)
     email = Column(String(200))
     role_id = Column(Integer, ForeignKey("roles.id"), nullable=False)
+    notify_status = Column(Boolean, nullable=False, default=True)
+    notify_comments = Column(Boolean, nullable=False, default=True)
+    notify_deadlines = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
     role = relationship("Role")
@@ -90,6 +93,7 @@ class Topic(Base):
     supervisor_id = Column(Integer, ForeignKey("supervisor_profiles.id"), nullable=False)
     direction_id = Column(Integer, ForeignKey("directions.id"), nullable=False)
     is_available = Column(Boolean, nullable=False, default=True)
+    is_archived = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
 
     supervisor = relationship("SupervisorProfile")
@@ -163,9 +167,9 @@ class Review(Base):
     thesis_stage_id = Column(Integer, ForeignKey("thesis_stages.id"), nullable=False)
     supervisor_id = Column(Integer, ForeignKey("supervisor_profiles.id"), nullable=False)
     decision = Column(String(20), nullable=False)  # approved / revision
+    grade = Column(Integer)
     comment = Column(Text)
     created_at = Column(DateTime, nullable=False, default=datetime.now)
-
 
 # Уведомленич
 
@@ -178,4 +182,31 @@ class Notification(Base):
     text = Column(String(500), nullable=False)
     link = Column(String(300))
     is_read = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+
+
+# Рейтинги и логи
+
+class SupervisorRating(Base):
+    __tablename__ = "supervisor_ratings"
+
+    id = Column(Integer, primary_key=True)
+    thesis_id = Column(Integer, ForeignKey("theses.id"), nullable=False, unique=True)
+    student_id = Column(Integer, ForeignKey("student_profiles.id"), nullable=False)
+    supervisor_id = Column(Integer, ForeignKey("supervisor_profiles.id"), nullable=False)
+    score = Column(Integer, nullable=False)
+    comment = Column(Text)
+    created_at = Column(DateTime, nullable=False, default=datetime.now)
+    updated_at = Column(DateTime)
+
+    student = relationship("StudentProfile")
+
+
+class ActivityLog(Base):
+    __tablename__ = "activity_log"
+
+    id = Column(Integer, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    action = Column(String(50), nullable=False)
+    text = Column(String(500), nullable=False)
     created_at = Column(DateTime, nullable=False, default=datetime.now)

@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.8.2",
+    version = "0.9.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -68,7 +68,10 @@ def get_topics(
     db: Session = Depends(get_db)
 ):
     """Каталог свободных тем. Есть фильтр по направлению и по словам в названии."""
-    query = db.query(models.Topic).filter(models.Topic.is_available == True)
+    query = db.query(models.Topic).filter(
+        models.Topic.is_available == True,
+        models.Topic.is_archived == False,
+    )
     if direction_id is not None:
         query = query.filter(models.Topic.direction_id == direction_id)
     topics = query.order_by(models.Topic.title).all()
@@ -99,9 +102,10 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     if user is None or user.password_hash != hash_password(data.password):
         raise HTTPException(status_code=401, detail="Неверный логин или пароль")
 
+    profile = None
     if user.role.name == "student":
         profile = db.query(models.StudentProfile).filter(models.StudentProfile.user_id == user.id).first()
-    else:
+    elif user.role.name == "supervisor":
         profile = db.query(models.SupervisorProfile).filter(models.SupervisorProfile.user_id == user.id).first()
 
     return {
@@ -109,8 +113,8 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "login": user.login,
         "full_name": user.full_name,
         "role": user.role.name,
-        "profile_id": profile.id,
-    }                                   # переделать на JWT токен если будет время ! ! !
+        "profile_id": profile.id if profile else None,  # у админа профиля нет
+    }                                                                                   # переделать на JWT токен если будет время ! ! !
 
 # Заявки на темы
 class TopicRequestCreate(BaseModel):

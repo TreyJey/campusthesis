@@ -1,10 +1,10 @@
--- CampusThesis — схема базы данных (14 сущностей)
+-- CampusThesis — схема базы данных (16 сущностей)
 
 -- Справочники
 
 CREATE TABLE roles (
     id   SERIAL PRIMARY KEY,
-    name VARCHAR(20) NOT NULL UNIQUE          -- student / supervisor
+    name VARCHAR(20) NOT NULL UNIQUE          -- student / supervisor / admin
 );
 
 CREATE TABLE departments (
@@ -35,6 +35,9 @@ CREATE TABLE users (
     full_name     VARCHAR(200) NOT NULL,
     email         VARCHAR(200),
     role_id       INTEGER NOT NULL REFERENCES roles(id),
+    notify_status    BOOLEAN NOT NULL DEFAULT TRUE,   -- уведомлять о смене статусов
+    notify_comments  BOOLEAN NOT NULL DEFAULT TRUE,   -- уведомлять о комментариях
+    notify_deadlines BOOLEAN NOT NULL DEFAULT TRUE,   -- уведомлять о дедлайнах
     created_at    TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -64,6 +67,7 @@ CREATE TABLE topics (
     supervisor_id INTEGER NOT NULL REFERENCES supervisor_profiles(id),
     direction_id  INTEGER NOT NULL REFERENCES directions(id),
     is_available  BOOLEAN NOT NULL DEFAULT TRUE,
+    is_archived   BOOLEAN NOT NULL DEFAULT FALSE,  -- TRUE: методист убрал тему из каталога
     created_at    TIMESTAMP NOT NULL DEFAULT NOW()
 );
 
@@ -113,7 +117,8 @@ CREATE TABLE reviews (
     id              SERIAL PRIMARY KEY,
     thesis_stage_id INTEGER NOT NULL REFERENCES thesis_stages(id),
     supervisor_id   INTEGER NOT NULL REFERENCES supervisor_profiles(id),
-    decision        VARCHAR(20) NOT NULL, -- approved / revision
+    decision        VARCHAR(20) NOT NULL,   -- approved / revision
+    grade           INTEGER,                -- оценка этапа 2–5
     comment         TEXT,
     created_at      TIMESTAMP NOT NULL DEFAULT NOW()
 );
@@ -127,5 +132,26 @@ CREATE TABLE notifications (
     text       VARCHAR(500) NOT NULL,
     link       VARCHAR(300), -- куда ведёт клик по уведомлению
     is_read    BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+
+-- Рейтинги и логи
+
+CREATE TABLE supervisor_ratings (
+    id            SERIAL PRIMARY KEY,
+    thesis_id     INTEGER NOT NULL UNIQUE REFERENCES theses(id),
+    student_id    INTEGER NOT NULL REFERENCES student_profiles(id),
+    supervisor_id INTEGER NOT NULL REFERENCES supervisor_profiles(id),
+    score         INTEGER NOT NULL, -- 1–5
+    comment       TEXT,
+    created_at    TIMESTAMP NOT NULL DEFAULT NOW(),
+    updated_at    TIMESTAMP
+);
+
+CREATE TABLE activity_log (
+    id         SERIAL PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id),
+    action     VARCHAR(50) NOT NULL, -- request_created / file_uploaded / stage_reviewed / ...
+    text       VARCHAR(500) NOT NULL,
     created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );

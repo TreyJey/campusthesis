@@ -19,7 +19,8 @@ def seed():
     # Роли
     student_role = Role(name="student")
     supervisor_role = Role(name="supervisor")
-    db.add_all([student_role, supervisor_role])
+    admin_role = Role(name="admin")
+    db.add_all([student_role, supervisor_role, admin_role])
 
     # Кафедры и направления
     dep_it = Department(name="Кафедра информационных технологий")
@@ -39,6 +40,10 @@ def seed():
     for order, (name, days) in enumerate(stages, start=1):
         db.add(StageType(name=name, order_num=order, default_days=days))
     db.flush()
+
+    # Админ (мтодист) кафедры
+    db.add(User(login="admin", password_hash=hash_password("123"), full_name="Валиев Артур Марсельевич",
+                email="admin@campus.example", role_id=admin_role.id))
 
     # Руководители
     supervisors = [
