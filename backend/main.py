@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.9.0",
+    version = "0.9.1",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -41,6 +41,28 @@ def get_directions(db: Session = Depends(get_db)):
         {"id": d.id, "code": d.code, "name": d.name, "department": d.department.name}
         for d in directions
     ]
+
+
+# Лог и уведомления
+def log_action(db: Session, user_id: int, action: str, text: str) -> None:
+    """Записывает действие пользователя в журнал. Сохраняется вместе с остальными изменениями на комите."""
+    db.add(models.ActivityLog(user_id=user_id, action=action, text=text))
+
+
+# Какая настройка пользоватля отвечает за какой тип уведомлений
+NOTIFY_SETTINGS = {
+    "status": "notify_status",
+    "comment": "notify_comments",
+    "deadline": "notify_deadlines",
+}
+
+
+def notify(db: Session, user: models.User, type_: str, text: str, link: str | None = None) -> None:
+    """Создаёт уведомление, если пользователь не отключил этот тип в настройках."""
+    if not getattr(user, NOTIFY_SETTINGS[type_]):
+        return
+    db.add(models.Notification(user_id=user.id, type=type_, text=text, link=link))
+
 
 # Темы
 # функция, чтобы не дублировать в двух следующих геттерах
@@ -80,6 +102,7 @@ def get_topics(
         topics = [t for t in topics if search.lower() in t.title.lower()]
     return [topic_to_dict(t) for t in topics]
 
+
 @app.get("/api/topics/{topic_id}", tags=["Темы"])
 def get_topic(topic_id: int, db: Session = Depends(get_db)):
     """Одна тема со всеми подробностями."""
@@ -87,6 +110,7 @@ def get_topic(topic_id: int, db: Session = Depends(get_db)):
     if topic is None:
         raise HTTPException(status_code=404, detail="Тема не найдена")
     return topic_to_dict(topic)
+
 
 # Вход
 class LoginRequest(BaseModel):
@@ -115,6 +139,7 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
         "role": user.role.name,
         "profile_id": profile.id if profile else None,  # у админа профиля нет
     }                                                                                   # переделать на JWT токен если будет время ! ! !
+
 
 # Заявки на темы
 class TopicRequestCreate(BaseModel):
@@ -157,6 +182,9 @@ def create_topic_request(data: TopicRequestCreate, db: Session = Depends(get_db)
 
     request = models.TopicRequest(student_id=student.id, topic_id=topic.id, message=data.message)
     db.add(request)
+    log_action(db, student.user_id, "request_created", f'Подана заявка на тему "{topic.title}"')
+    notify(db, topic.supervisor.user, "status",
+           f'{student.user.full_name} подал(а) заявку на тему "{topic.title}"', "/supervisor.html")
     db.commit()
     db.refresh(request)
 
@@ -168,6 +196,7 @@ def create_topic_request(data: TopicRequestCreate, db: Session = Depends(get_db)
         "status": request.status,
         "created_at": request.created_at,
     }
+
 
 def request_to_dict(req: models.TopicRequest) -> dict:
     """Превращает заявку в словарь с темой, студентом и руководителем."""
@@ -220,6 +249,7 @@ def get_supervisor_requests(
         query = query.filter(models.TopicRequest.status == status)
     requests = query.order_by(models.TopicRequest.created_at.desc()).all()
     return [request_to_dict(r) for r in requests]
+
 
 class TopicRequestDecision(BaseModel):
     """Тело запроса на решение по заявке."""
@@ -296,6 +326,13 @@ def decide_topic_request(request_id: int, data: TopicRequestDecision, db: Sessio
             other.status = "rejected"
             other.supervisor_comment = "Тема или студент уже закреплены"
             other.decided_at = now
+            notify(db, other.student.user, "status",
+                   f'Заявка на тему "{other.topic.title}" отклонена: тема или студент уже закреплены", "/student.html')
+
+    decision = "одобрена" if data.decision == "approved" else "отклонена"
+    log_action(db, supervisor.user_id, "request_decided",
+               f'Заявка {req.student.user.full_name} на тему "{req.topic.title}" {decision}')
+    notify(db, req.student.user, "status", f'Ваша заявка на тему "{req.topic.title}" {decision}', "/student.html")
 
     db.commit()
 
