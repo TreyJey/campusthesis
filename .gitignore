@@ -8,3 +8,6 @@ venv/
 
 # IDE
 .vscode/
+
+# Загруженные файлы
+uploads/

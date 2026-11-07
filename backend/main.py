@@ -1,9 +1,12 @@
 from datetime import date, datetime, timedelta
 from typing import Literal # enum
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, File, UploadFile, Form
+from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
+from pathlib import Path
+import uuid
 
 import models
 from database import get_db, Base, engine
@@ -435,3 +438,79 @@ def get_thesis(thesis_id: int, db: Session = Depends(get_db)):
     if thesis is None:
         raise HTTPException(status_code=404, detail="ВКР не найдена")
     return thesis_to_dict(thesis)
+
+
+# Файлы этапов
+UPLOAD_DIR = Path(__file__).parent / "uploads"  # папка uploads рядом с main.py
+UPLOAD_DIR.mkdir(exist_ok=True)
+ALLOWED_EXTENSIONS = {".pdf", ".doc", ".docx", ".zip", ".7z", ".rar"}
+MAX_FILE_SIZE = 20 * 1024 * 1024  # 20мб
+
+
+@app.post("/api/stages/{stage_id}/files", status_code=201, tags=["Файлы"])
+def upload_stage_file(
+    stage_id: int,
+    student_id: int = Form(...),
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+):
+    """Студент загружает файл этапа. Этап переходит в статус "на проверке"."""
+    stage = db.get(models.ThesisStage, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Этап не найден")
+    thesis = db.get(models.Thesis, stage.thesis_id)
+    if thesis.student_id != student_id:
+        raise HTTPException(status_code=403, detail="Это не ваша ВКР")
+    if stage.status not in ("open", "revision"):
+        raise HTTPException(status_code=400, detail="Сейчас загрузить файл на этот этап нельзя")
+
+    extension = Path(file.filename).suffix.lower()
+    if extension not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Допустимые форматы: PDF, DOC, DOCX, ZIP, 7Z, RAR")
+    content = file.file.read()
+    if len(content) > MAX_FILE_SIZE:
+        raise HTTPException(status_code=400, detail="Файл больше 20 МБ")
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Файл пустой")
+
+    # Сохраняем на диск под уникальным именем
+    stored_name = f"{uuid.uuid4().hex}{extension}"
+    (UPLOAD_DIR / stored_name).write_bytes(content)
+
+    stage_file = models.StageFile(
+        thesis_stage_id=stage.id,
+        uploaded_by=thesis.student.user_id,
+        original_name=file.filename,
+        stored_path=stored_name,
+        size_bytes=len(content),
+    )
+    db.add(stage_file)
+    stage.status = "submitted"
+    stage.submitted_at = datetime.now()
+
+    log_action(db, thesis.student.user_id, "file_uploaded",
+               f'Загружен файл "{file.filename}" на этап "{stage.stage_type.name}"')
+    notify(db, thesis.supervisor.user, "status",
+           f'{thesis.student.user.full_name} сдал(а) этап "{stage.stage_type.name}" на проверку', "/supervisor.html")
+    db.commit()
+    db.refresh(stage_file)
+
+    return {
+        "id": stage_file.id,
+        "original_name": stage_file.original_name,
+        "size_bytes": stage_file.size_bytes,
+        "uploaded_at": stage_file.uploaded_at,
+        "stage_status": stage.status,
+    }
+
+
+@app.get("/api/files/{file_id}", tags=["Файлы"])
+def download_file(file_id: int, db: Session = Depends(get_db)):
+    """Скачать файл этапа под исходным именем."""
+    stage_file = db.get(models.StageFile, file_id)
+    if stage_file is None:
+        raise HTTPException(status_code=404, detail="Файл не найден")
+    path = UPLOAD_DIR / stage_file.stored_path
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Файл удалён с сервера")
+    return FileResponse(path, filename=stage_file.original_name)
