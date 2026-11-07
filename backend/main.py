@@ -1,5 +1,5 @@
 from datetime import date, datetime, timedelta
-from typing import Literal
+from typing import Literal # enum
 from fastapi import Depends, FastAPI, HTTPException
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.8.0",
+    version = "0.8.1",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -298,3 +298,65 @@ def decide_topic_request(request_id: int, data: TopicRequestDecision, db: Sessio
     result = request_to_dict(req)
     result["thesis_id"] = thesis.id if thesis else None
     return result
+
+
+# Рабочая область студента
+def stage_to_dict(stage: models.ThesisStage) -> dict:
+    """Этап ВКР со всеми файлами и отзывами."""
+    is_finished = stage.status == "approved"
+    return {
+        "id": stage.id,
+        "name": stage.stage_type.name,
+        "order_num": stage.stage_type.order_num,
+        "deadline": stage.deadline,
+        "status": stage.status,
+        "is_overdue": not is_finished and stage.deadline < date.today(),
+        "submitted_at": stage.submitted_at,
+        "approved_at": stage.approved_at,
+        "files": [
+            {"id": f.id, "original_name": f.original_name, "size_bytes": f.size_bytes, "uploaded_at": f.uploaded_at}
+            for f in sorted(stage.files, key=lambda f: f.uploaded_at, reverse=True)
+        ],
+        "reviews": [
+            {"id": r.id, "decision": r.decision, "comment": r.comment, "created_at": r.created_at}
+            for r in sorted(stage.reviews, key=lambda r: r.created_at, reverse=True)
+        ],
+    }
+
+
+def current_stage(thesis: models.Thesis) -> models.ThesisStage | None:
+    """Первый неодобренный этап. =None если пройдены все."""
+    for stage in thesis.stages:
+        if stage.status != "approved":
+            return stage
+    return None
+
+
+def thesis_to_dict(thesis: models.Thesis) -> dict:
+    """ВКР целиком: тема, студент, руководитель, текущий этап и все этапы."""
+    current = current_stage(thesis)
+    return {
+        "id": thesis.id,
+        "status": thesis.status,
+        "created_at": thesis.created_at,
+        "topic": {"id": thesis.topic.id, "title": thesis.topic.title},
+        "student": {
+            "id": thesis.student.id,
+            "full_name": thesis.student.user.full_name,
+            "group_name": thesis.student.group_name,
+        },
+        "supervisor": {"id": thesis.supervisor.id, "full_name": thesis.supervisor.user.full_name},
+        "current_stage_id": current.id if current else None,
+        "stages": [stage_to_dict(s) for s in thesis.stages],
+    }
+
+
+@app.get("/api/students/{student_id}/thesis", tags=["ВКР"])
+def get_student_thesis(student_id: int, db: Session = Depends(get_db)):
+    """Рабочая область студента: его вкр со всеми этапами, файлами и отзывами."""
+    if db.get(models.StudentProfile, student_id) is None:
+        raise HTTPException(status_code=404, detail="Студент не найден")
+    thesis = db.query(models.Thesis).filter(models.Thesis.student_id == student_id).first()
+    if thesis is None:
+        raise HTTPException(status_code=404, detail="У студента ещё нет закреплённой темы")
+    return thesis_to_dict(thesis)
