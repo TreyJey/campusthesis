@@ -14,7 +14,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.8.1",
+    version = "0.8.2",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -359,4 +359,38 @@ def get_student_thesis(student_id: int, db: Session = Depends(get_db)):
     thesis = db.query(models.Thesis).filter(models.Thesis.student_id == student_id).first()
     if thesis is None:
         raise HTTPException(status_code=404, detail="У студента ещё нет закреплённой темы")
+    return thesis_to_dict(thesis)
+
+
+# Студенты руководителя
+@app.get("/api/supervisors/{supervisor_id}/theses", tags=["ВКР"])
+def get_supervisor_theses(supervisor_id: int, db: Session = Depends(get_db)):
+    """Студенты руководителя: тема и текущий этап каждого."""
+    supervisor = db.get(models.SupervisorProfile, supervisor_id)
+    if supervisor is None:
+        raise HTTPException(status_code=404, detail="Руководитель не найден")
+    theses = db.query(models.Thesis).filter(models.Thesis.supervisor_id == supervisor_id).all()
+
+    result = []
+    for thesis in theses:
+        current = current_stage(thesis)
+        result.append({
+            "id": thesis.id,
+            "topic": {"id": thesis.topic.id, "title": thesis.topic.title},
+            "student": {
+                "id": thesis.student.id,
+                "full_name": thesis.student.user.full_name,
+                "group_name": thesis.student.group_name,
+            },
+            "current_stage": stage_to_dict(current) if current else None,
+        })
+    return {"max_students": supervisor.max_students, "theses": result}
+
+
+@app.get("/api/theses/{thesis_id}", tags=["ВКР"])
+def get_thesis(thesis_id: int, db: Session = Depends(get_db)):
+    """Одна ВКР целиком. Руководитель открывает её из своих студентов."""
+    thesis = db.get(models.Thesis, thesis_id)
+    if thesis is None:
+        raise HTTPException(status_code=404, detail="ВКР не найдена")
     return thesis_to_dict(thesis)
