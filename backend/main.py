@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import FileResponse
 from sqlalchemy import text
 from sqlalchemy.orm import Session
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pathlib import Path
 import uuid
 
@@ -17,7 +17,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.9.1",
+    version = "0.9.3",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -362,7 +362,7 @@ def stage_to_dict(stage: models.ThesisStage) -> dict:
             for f in sorted(stage.files, key=lambda f: f.uploaded_at, reverse=True)
         ],
         "reviews": [
-            {"id": r.id, "decision": r.decision, "comment": r.comment, "created_at": r.created_at}
+            {"id": r.id, "decision": r.decision, "grade": r.grade, "comment": r.comment, "created_at": r.created_at}
             for r in sorted(stage.reviews, key=lambda r: r.created_at, reverse=True)
         ],
     }
@@ -514,3 +514,70 @@ def download_file(file_id: int, db: Session = Depends(get_db)):
     if not path.exists():
         raise HTTPException(status_code=404, detail="Файл удалён с сервера")
     return FileResponse(path, filename=stage_file.original_name)
+
+
+# Отзывы руководителя
+class ReviewCreate(BaseModel):
+    """Тело запроса на отзыв по этапу."""
+    supervisor_id: int
+    decision: Literal["approved", "revision"]
+    grade: int | None = Field(default=None, ge=2, le=5)
+    comment: str | None = None
+
+
+@app.post("/api/stages/{stage_id}/reviews", status_code=201, tags=["Отзывы"])
+def review_stage(stage_id: int, data: ReviewCreate, db: Session = Depends(get_db)):
+    """Руководитель проверяет этап: одобряет(открывается следующий) или возвращает на доработку."""
+    stage = db.get(models.ThesisStage, stage_id)
+    if stage is None:
+        raise HTTPException(status_code=404, detail="Этап не найден")
+    thesis = db.get(models.Thesis, stage.thesis_id)
+    if thesis.supervisor_id != data.supervisor_id:
+        raise HTTPException(status_code=403, detail="Это этап студента другого руководителя")
+    if stage.status != "submitted":
+        raise HTTPException(status_code=400, detail="Этап не ждёт проверки")
+    if data.decision == "revision" and not data.comment:
+        raise HTTPException(status_code=400, detail="При возврате на доработку нужен комментарий")
+
+    # Все проверки пройдены - сохраняем отзыв и меняем статусы
+    db.add(models.Review(
+        thesis_stage_id=stage.id,
+        supervisor_id=data.supervisor_id,
+        decision=data.decision,
+        grade=data.grade,
+        comment=data.comment,
+    ))
+
+    stage_name = stage.stage_type.name
+    next_stage = None
+    if data.decision == "approved":
+        stage.status = "approved"
+        stage.approved_at = datetime.now()
+        # Открываем следующий этап по порядку
+        for s in thesis.stages:
+            if s.stage_type.order_num == stage.stage_type.order_num + 1:
+                next_stage = s
+        if next_stage is not None:
+            next_stage.status = "open"
+        else:
+            thesis.status = "defended"  # этапа больше нет— защита пройдена
+        decision_text = "одобрен"
+    else:
+        stage.status = "revision"
+        decision_text = "возвращён на доработку"
+
+    student_user = thesis.student.user
+    log_action(db, thesis.supervisor.user_id, "stage_reviewed",
+               f'Этап "{stage_name}" студента {student_user.full_name} {decision_text}')
+    notify(db, student_user, "status", f'Этап "{stage_name}" {decision_text}', "/student.html")
+    if data.comment:
+        notify(db, student_user, "comment", f'Комментарий руководителя к этапу "{stage_name}": {data.comment}',
+                "/student.html")
+    db.commit()
+
+    result = stage_to_dict(stage)
+    result["next_stage_id"] = next_stage.id if next_stage else None
+    return result                                                               
+
+                                                                                        # дальше лк сделать, не забыть отправить остров + забрать заказ в 9
+                                                                                        # -> админка -> фильтры -> рейтинг -> добавить в сид реалистичные данные -> бэк готов
