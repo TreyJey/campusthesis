@@ -2,6 +2,7 @@ from datetime import date, datetime, timedelta
 from typing import Literal # enum
 from fastapi import Depends, FastAPI, HTTPException, File, UploadFile, Form
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
@@ -17,7 +18,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.11.1",
+    version = "0.12.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -1177,4 +1178,9 @@ def get_supervisor_ratings(supervisor_id: int, db: Session = Depends(get_db)):
             for r in reviews
         ],
     }
+
+
+# Фронтенд: страницы из папки static
+STATIC_DIR = Path(__file__).parent / "static"
+app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
 
