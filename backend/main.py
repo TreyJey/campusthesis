@@ -17,7 +17,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.10.0",
+    version = "0.11.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -43,6 +43,28 @@ def get_directions(db: Session = Depends(get_db)):
     return [
         {"id": d.id, "code": d.code, "name": d.name, "department": d.department.name}
         for d in directions
+    ]
+
+
+@app.get("/api/departments", tags=["Словари"])
+def get_departments(db: Session = Depends(get_db)):
+    """Список кафедр."""
+    return [{"id": d.id, "name": d.name} for d in db.query(models.Department).order_by(models.Department.name).all()]
+
+
+@app.get("/api/supervisors", tags=["Словари"])
+def get_supervisors(db: Session = Depends(get_db)):
+    """Список руководителей с кафедрой и рейтингом (для фильтров)."""
+    supervisors = db.query(models.SupervisorProfile).all()
+    return [
+        {
+            "id": s.id,
+            "full_name": s.user.full_name,
+            "position": s.position,
+            "department": {"id": s.department.id, "name": s.department.name},
+            "rating": supervisor_rating(s),
+        }
+        for s in sorted(supervisors, key=lambda s: s.user.full_name)
     ]
 
 
@@ -88,6 +110,14 @@ def topic_to_dict(topic: models.Topic) -> dict:
     }
 
 
+def matches(search: str | None, *texts: str | None) -> bool:
+    """True, если поиск пустой или строка найдена хотя бы в одном из текстов (без учёта регистра)."""
+    if not search:
+        return True
+    query_text = search.lower().strip()
+    return any(query_text in (t or "").lower() for t in texts)
+
+
 # Рейтинг руководителя
 def supervisor_rating(supervisor: models.SupervisorProfile) -> dict:
     """Средняя оценка руководителя и число оценок."""
@@ -96,23 +126,49 @@ def supervisor_rating(supervisor: models.SupervisorProfile) -> dict:
     return {"average": average, "count": len(scores)}
 
 
-@app.get("/api/topics", tags = ["Темы"])
+@app.get("/api/topics", tags=["Темы"])
 def get_topics(
-    direction_id: int | None = None,
     search: str | None = None,
-    db: Session = Depends(get_db)
+    direction_id: int | None = None,
+    department_id: int | None = None,
+    supervisor_id: int | None = None,
+    min_rating: float | None = None,
+    sort: Literal["title", "rating", "newest"] = "title",
+    db: Session = Depends(get_db),
 ):
-    """Каталог свободных тем. Есть фильтр по направлению и по словам в названии."""
-    query = db.query(models.Topic).filter(
-        models.Topic.is_available == True,
-        models.Topic.is_archived == False,
+    """Каталог свободных тем.
+
+    Поиск по названию, описанию, требованиям и ФИО руководителя.
+    Фильтры: направление, кафедра, руководитель, минимальный рейтинг руководителя.
+    Сортировка: по названию, по рейтингу руководителя, сначала новые.
+    """
+    query = (
+        db.query(models.Topic)
+        .join(models.SupervisorProfile)
+        .filter(models.Topic.is_available == True, models.Topic.is_archived == False)
     )
     if direction_id is not None:
         query = query.filter(models.Topic.direction_id == direction_id)
-    topics = query.order_by(models.Topic.title).all()
-    if search:
-        # искать пришлось в питоне SQLite не умеет сравнивать русские буквы без учёта регистра
-        topics = [t for t in topics if search.lower() in t.title.lower()]
+    if department_id is not None:
+        query = query.filter(models.SupervisorProfile.department_id == department_id)
+    if supervisor_id is not None:
+        query = query.filter(models.Topic.supervisor_id == supervisor_id)
+    topics = query.all()
+
+    # искать пришлось в питоне SQLite не умеет сравнивать русские буквы без учёта регистра
+    topics = [
+        t for t in topics
+        if matches(search, t.title, t.description, t.requirements, t.supervisor.user.full_name)
+    ]
+    if min_rating is not None:
+        topics = [t for t in topics if (supervisor_rating(t.supervisor)["average"] or 0) >= min_rating]
+
+    if sort == "rating":
+        topics.sort(key=lambda t: supervisor_rating(t.supervisor)["average"] or 0, reverse=True)
+    elif sort == "newest":
+        topics.sort(key=lambda t: t.created_at, reverse=True)
+    else:
+        topics.sort(key=lambda t: t.title)
     return [topic_to_dict(t) for t in topics]
 
 
@@ -231,26 +287,39 @@ def request_to_dict(req: models.TopicRequest) -> dict:
 
 
 @app.get("/api/students/{student_id}/requests", tags=["Заявки"])
-def get_student_requests(student_id: int, db: Session = Depends(get_db)):
-    """Все заявки студента со статусами, сорт - новые сверху."""
+def get_student_requests(
+    student_id: int,
+    status: Literal["pending", "approved", "rejected"] | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+):
+    """Все заявки студента со статусами, новые сверху. Фильтр по статусу и поиск по теме."""
     if db.get(models.StudentProfile, student_id) is None:
         raise HTTPException(status_code=404, detail="Студент не найден")
-    requests = (
-        db.query(models.TopicRequest)
-        .filter(models.TopicRequest.student_id == student_id)
-        .order_by(models.TopicRequest.created_at.desc())
-        .all()
-    )
+    query = db.query(models.TopicRequest).filter(models.TopicRequest.student_id == student_id)
+    if status is not None:
+        query = query.filter(models.TopicRequest.status == status)
+    requests = query.order_by(models.TopicRequest.created_at.desc()).all()
+    requests = [r for r in requests if matches(search, r.topic.title)]
     return [request_to_dict(r) for r in requests]
 
 
 @app.get("/api/supervisors/{supervisor_id}/requests", tags=["Заявки"])
 def get_supervisor_requests(
     supervisor_id: int,
-    status: str | None = None,
+    search: str | None = None,
+    status: Literal["pending", "approved", "rejected"] | None = None,
+    topic_id: int | None = None,
+    group_name: str | None = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
     db: Session = Depends(get_db),
 ):
-    """Заявки на темы руководителя. Можно отфильтровать по статусу: pending, approved, rejected."""
+    """Заявки на темы руководителя, новые сверху.
+
+    Поиск по ФИО студента, названию темы и сообщению.
+    Фильтры: статус, тема, группа студента, период подачи.
+    """
     if db.get(models.SupervisorProfile, supervisor_id) is None:
         raise HTTPException(status_code=404, detail="Руководитель не найден")
     query = (
@@ -260,8 +329,22 @@ def get_supervisor_requests(
     )
     if status is not None:
         query = query.filter(models.TopicRequest.status == status)
+    if topic_id is not None:
+        query = query.filter(models.TopicRequest.topic_id == topic_id)
     requests = query.order_by(models.TopicRequest.created_at.desc()).all()
-    return [request_to_dict(r) for r in requests]
+
+    result = []
+    for r in requests:
+        if group_name and r.student.group_name != group_name:
+            continue
+        if date_from and r.created_at.date() < date_from:
+            continue
+        if date_to and r.created_at.date() > date_to:
+            continue
+        if not matches(search, r.student.user.full_name, r.topic.title, r.message):
+            continue
+        result.append(request_to_dict(r))
+    return result
 
 
 class TopicRequestDecision(BaseModel):
@@ -410,6 +493,26 @@ def thesis_to_dict(thesis: models.Thesis) -> dict:
     }
 
 
+def thesis_passes_filters(
+    thesis: models.Thesis,
+    search: str | None,
+    stage_num: int | None,
+    overdue_only: bool,
+    status: str | None,
+) -> bool:
+    """Общие фильтры для списков ВКР: поиск, текущий этап, только просроченные, статус ВКР."""
+    current = current_stage(thesis)
+    if not matches(search, thesis.student.user.full_name, thesis.topic.title, thesis.student.group_name):
+        return False
+    if stage_num is not None and (current is None or current.stage_type.order_num != stage_num):
+        return False
+    if overdue_only and not (current and current.deadline < date.today()):
+        return False
+    if status is not None and thesis.status != status:
+        return False
+    return True
+
+
 @app.get("/api/students/{student_id}/thesis", tags=["ВКР"])
 def get_student_thesis(student_id: int, db: Session = Depends(get_db)):
     """Рабочая область студента: его вкр со всеми этапами, файлами и отзывами."""
@@ -423,8 +526,18 @@ def get_student_thesis(student_id: int, db: Session = Depends(get_db)):
 
 # Студенты руководителя
 @app.get("/api/supervisors/{supervisor_id}/theses", tags=["ВКР"])
-def get_supervisor_theses(supervisor_id: int, db: Session = Depends(get_db)):
-    """Студенты руководителя: тема и текущий этап каждого."""
+def get_supervisor_theses(
+    supervisor_id: int,
+    search: str | None = None,
+    stage_num: int | None = None,
+    overdue_only: bool = False,
+    status: Literal["in_progress", "defended"] | None = None,
+    db: Session = Depends(get_db),
+):
+    """Студенты руководителя: тема и текущий этап каждого.
+
+    Поиск по ФИО, теме и группе.
+    Фильтры: номер текущего этапа (1–7), только просроченные, статус ВКР."""
     supervisor = db.get(models.SupervisorProfile, supervisor_id)
     if supervisor is None:
         raise HTTPException(status_code=404, detail="Руководитель не найден")
@@ -432,9 +545,12 @@ def get_supervisor_theses(supervisor_id: int, db: Session = Depends(get_db)):
 
     result = []
     for thesis in theses:
+        if not thesis_passes_filters(thesis, search, stage_num, overdue_only, status):
+            continue
         current = current_stage(thesis)
         result.append({
             "id": thesis.id,
+            "status": thesis.status,
             "topic": {"id": thesis.topic.id, "title": thesis.topic.title},
             "student": {
                 "id": thesis.student.id,
@@ -443,7 +559,7 @@ def get_supervisor_theses(supervisor_id: int, db: Session = Depends(get_db)):
             },
             "current_stage": stage_to_dict(current) if current else None,
         })
-    return {"max_students": supervisor.max_students, "theses": result}
+    return {"max_students": supervisor.max_students, "taken": len(theses), "theses": result}
 
 
 @app.get("/api/theses/{thesis_id}", tags=["ВКР"])
@@ -792,13 +908,32 @@ def require_admin(db: Session, admin_id: int) -> models.User:
 
 
 @app.get("/api/admin/theses", tags=["Админ"])
-def get_admin_theses(admin_id: int, db: Session = Depends(get_db)):
-    """Список всех ВКР."""
+def get_admin_theses(
+    admin_id: int,
+    search: str | None = None,
+    direction_id: int | None = None,
+    supervisor_id: int | None = None,
+    stage_num: int | None = None,
+    overdue_only: bool = False,
+    status: Literal["in_progress", "defended"] | None = None,
+    db: Session = Depends(get_db),
+):
+    """Список всех ВКР.
+
+    Поиск по ФИО студента, теме и группе.
+    Фильтры: направление, руководитель, номер текущего этапа (1–7), только просроченные, статус ВКР."""
     require_admin(db, admin_id)
-    theses = db.query(models.Thesis).all()
+    query = db.query(models.Thesis)
+    if supervisor_id is not None:
+        query = query.filter(models.Thesis.supervisor_id == supervisor_id)
+    theses = query.all()
 
     result = []
     for thesis in theses:
+        if direction_id is not None and thesis.topic.direction_id != direction_id:
+            continue
+        if not thesis_passes_filters(thesis, search, stage_num, overdue_only, status):
+            continue
         current = current_stage(thesis)
         result.append({
             "id": thesis.id,
@@ -857,13 +992,40 @@ def change_deadline(data: DeadlineChange, stage_id: int, db: Session = Depends(g
 
 # Админ: управление темами
 @app.get("/api/admin/topics", tags=["Админ"])
-def get_admin_topics(admin_id: int, db: Session = Depends(get_db)):
-    """Все темы: свободные, занятые и архивные. У занятых указан студент."""
+def get_admin_topics(
+    admin_id: int,
+    search: str | None = None,
+    direction_id: int | None = None,
+    department_id: int | None = None,
+    supervisor_id: int | None = None,
+    state: Literal["available", "taken", "archived"] | None = None,
+    db: Session = Depends(get_db),
+):
+    """Все темы: свободные, занятые и архивные. У занятых указан студент.
+
+    Поиск по названию, описанию и ФИО руководителя.
+    Фильтры: направление, кафедра, руководитель, состояние (свободна / занята / в архиве).
+    """
     require_admin(db, admin_id)
-    topics = db.query(models.Topic).order_by(models.Topic.title).all()
+    query = db.query(models.Topic).join(models.SupervisorProfile)
+    if direction_id is not None:
+        query = query.filter(models.Topic.direction_id == direction_id)
+    if department_id is not None:
+        query = query.filter(models.SupervisorProfile.department_id == department_id)
+    if supervisor_id is not None:
+        query = query.filter(models.Topic.supervisor_id == supervisor_id)
+    if state == "archived":
+        query = query.filter(models.Topic.is_archived == True)
+    elif state == "taken":
+        query = query.filter(models.Topic.is_available == False, models.Topic.is_archived == False)
+    elif state == "available":
+        query = query.filter(models.Topic.is_available == True, models.Topic.is_archived == False)
+    topics = query.order_by(models.Topic.title).all()
 
     result = []
     for topic in topics:
+        if not matches(search, topic.title, topic.description, topic.supervisor.user.full_name):
+            continue
         item = topic_to_dict(topic)
         thesis = db.query(models.Thesis).filter(models.Thesis.topic_id == topic.id).first()
         item["student"] = thesis.student.user.full_name if thesis else None
