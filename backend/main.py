@@ -17,7 +17,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.11.0",
+    version = "0.11.1",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -440,14 +440,14 @@ def decide_topic_request(request_id: int, data: TopicRequestDecision, db: Sessio
 # Рабочая область студента
 def stage_to_dict(stage: models.ThesisStage) -> dict:
     """Этап ВКР со всеми файлами и отзывами."""
-    is_finished = stage.status == "approved"
+    in_work = stage.status in ("open", "revision")
     return {
         "id": stage.id,
         "name": stage.stage_type.name,
         "order_num": stage.stage_type.order_num,
         "deadline": stage.deadline,
         "status": stage.status,
-        "is_overdue": not is_finished and stage.deadline < date.today(),
+        "is_overdue": not in_work and stage.deadline < date.today(),
         "submitted_at": stage.submitted_at,
         "approved_at": stage.approved_at,
         "files": [
@@ -506,7 +506,7 @@ def thesis_passes_filters(
         return False
     if stage_num is not None and (current is None or current.stage_type.order_num != stage_num):
         return False
-    if overdue_only and not (current and current.deadline < date.today()):
+    if overdue_only and not (current and current.deadline < date.today()):  
         return False
     if status is not None and thesis.status != status:
         return False
