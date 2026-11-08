@@ -80,6 +80,7 @@ class SupervisorProfile(Base):
 
     user = relationship("User")
     department = relationship("Department")
+    ratings = relationship("SupervisorRating")  # все оценки руководителя от студентов
 
 # Темы и заявки
 
@@ -131,6 +132,7 @@ class Thesis(Base):
     topic = relationship("Topic")
     supervisor = relationship("SupervisorProfile")
     stages = relationship("ThesisStage", order_by="ThesisStage.stage_type_id")
+    rating = relationship("SupervisorRating", uselist=False)  # оценка руководителя по этой ВКР
 
 
 class ThesisStage(Base):

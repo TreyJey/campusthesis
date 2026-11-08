@@ -17,7 +17,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.9.4",
+    version = "0.10.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])
@@ -68,7 +68,6 @@ def notify(db: Session, user: models.User, type_: str, text: str, link: str | No
 
 
 # Темы
-# функция, чтобы не дублировать в двух следующих геттерах
 def topic_to_dict(topic: models.Topic) -> dict:
     """Превращает тему из базы в словарь для ответа API"""
     return {
@@ -84,8 +83,18 @@ def topic_to_dict(topic: models.Topic) -> dict:
             "full_name": topic.supervisor.user.full_name,
             "position": topic.supervisor.position,
             "department": topic.supervisor.department.name,
+            "rating": supervisor_rating(topic.supervisor)
         }
     }
+
+
+# Рейтинг руководителя
+def supervisor_rating(supervisor: models.SupervisorProfile) -> dict:
+    """Средняя оценка руководителя и число оценок."""
+    scores = [r.score for r in supervisor.ratings]
+    average = round(sum(scores) / len(scores), 1) if scores else None
+    return {"average": average, "count": len(scores)}
+
 
 @app.get("/api/topics", tags = ["Темы"])
 def get_topics(
@@ -392,6 +401,11 @@ def thesis_to_dict(thesis: models.Thesis) -> dict:
         },
         "supervisor": {"id": thesis.supervisor.id, "full_name": thesis.supervisor.user.full_name},
         "current_stage_id": current.id if current else None,
+        "rating": (
+            {"score": thesis.rating.score,
+            "comment": thesis.rating.comment}
+            if thesis.rating else None
+        ),
         "stages": [stage_to_dict(s) for s in thesis.stages],
     }
 
@@ -944,4 +958,61 @@ def update_topic(topic_id: int, data: TopicUpdate, db: Session = Depends(get_db)
     db.commit()
     db.refresh(topic)
     return topic_to_dict(topic)
+
+
+# Оценка руководителя студентом
+class RatingCreate(BaseModel):
+    """Тело запроса на оценку руководителя."""
+    student_id: int
+    score: int = Field(ge=1, le=5)
+    comment: str | None = None
+
+
+@app.put("/api/theses/{thesis_id}/rating", tags=["Рейтинг"])
+def rate_supervisor(thesis_id: int, data: RatingCreate, db: Session = Depends(get_db)):
+    """Студент оценивает руководителя по своей ВКР. Повторный запрос меняет оценку."""
+    thesis = db.get(models.Thesis, thesis_id)
+    if thesis is None:
+        raise HTTPException(status_code=404, detail="ВКР не найдена")
+    if thesis.student_id != data.student_id:
+        raise HTTPException(status_code=403, detail="Оценить руководителя может только автор ВКР")
+
+    rating = thesis.rating
+    if rating is None:
+        rating = models.SupervisorRating(
+            thesis_id=thesis.id,
+            student_id=thesis.student_id,
+            supervisor_id=thesis.supervisor_id,
+            score=data.score,
+            comment=data.comment,
+        )
+        db.add(rating)
+        action_text = f"Поставлена оценка руководителю {thesis.supervisor.user.full_name}: {data.score}"
+    else:
+        rating.score = data.score
+        rating.comment = data.comment
+        rating.updated_at = datetime.now()
+        action_text = f"Изменена оценка руководителю {thesis.supervisor.user.full_name}: {data.score}"
+
+    log_action(db, thesis.student.user_id, "supervisor_rated", action_text)
+    notify(db, thesis.supervisor.user, "comment", f"Студент оценил работу с вами: {data.score} из 5", "/supervisor.html")
+    db.commit()
+    return {"score": rating.score, "comment": rating.comment, "supervisor_rating": supervisor_rating(thesis.supervisor)}
+
+
+@app.get("/api/supervisors/{supervisor_id}/ratings", tags=["Рейтинг"])
+def get_supervisor_ratings(supervisor_id: int, db: Session = Depends(get_db)):
+    """Средняя оценка руководителя и отзывы студентов."""
+    supervisor = db.get(models.SupervisorProfile, supervisor_id)
+    if supervisor is None:
+        raise HTTPException(status_code=404, detail="Руководитель не найден")
+    reviews = sorted(supervisor.ratings, key=lambda r: r.created_at, reverse=True)
+    return {
+        "supervisor": {"id": supervisor.id, "full_name": supervisor.user.full_name},
+        "rating": supervisor_rating(supervisor),
+        "reviews": [
+            {"score": r.score, "comment": r.comment, "student": r.student.user.full_name, "created_at": r.created_at}
+            for r in reviews
+        ],
+    }
 
