@@ -3,39 +3,69 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>CampusThesis</title>
+    <title>Вход — CampusThesis</title>
     <link rel="icon" href="data:,">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <link href="/css/style.css" rel="stylesheet">
 </head>
 <body>
     <main class="container py-5">
-        <h1 class="h3 mb-3">CampusThesis</h1>
-        <p class="text-secondary">Платформа управления выпускными квалификационными работами</p>
+        <div class="row justify-content-center">
+            <div class="col-12 col-sm-8 col-md-6 col-lg-4">
+                <h1 class="h3 text-center mb-1">CampusThesis</h1>
+                <p class="text-center text-secondary mb-4">Платформа управления ВКР</p>
 
-        <div class="row g-3">
-            <div class="col-12 col-md-6">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h2 class="h5 card-title">Студентам</h2>
-                        <p class="card-text">Выберите тему, подайте заявку и сдавайте этапы ВКР</p>
-                        <span class="badge bg-success">Одобрено</span>
-                        <span class="badge bg-warning text-dark">На проверке</span>
+                <div class="card">
+                    <div class="card-body p-4">
+                        <form id="login-form">
+                            <div class="mb-3">
+                                <label for="login-input" class="form-label">Логин</label>
+                                <input type="text" class="form-control" id="login-input" required>
+                            </div>
+                            <div class="mb-3">
+                                <label for="password-input" class="form-label">Пароль</label>
+                                <input type="password" class="form-control" id="password-input" required>
+                            </div>
+                            <div id="login-message"></div>
+                            <button type="submit" class="btn btn-primary w-100" id="btn-login">Войти</button>
+                        </form>
                     </div>
                 </div>
-            </div>
-            <div class="col-12 col-md-6">
-                <div class="card h-100">
-                    <div class="card-body">
-                        <h2 class="h5 card-title">Руководителям</h2>
-                        <p class="card-text">Рассматривайте заявки и проверяйте этапы работ</p>
-                        <button class="btn btn-primary">Войти</button>
-                    </div>
-                </div>
+
             </div>
         </div>
     </main>
 
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script>
+        // Словарь домашних страниц для ролей
+        const HOME_PAGES = { student: "/student.html", supervisor: "/supervisor.html", admin: "/admin.html" };
+
+        // Уже вошли - сразу на хомпейдж, логаут - localStorage.clear()
+        const savedUser = getUser();
+        if (savedUser) {
+            window.location.href = HOME_PAGES[savedUser.role];
+        }
+
+        document.getElementById("login-form").addEventListener("submit", async (event) => {
+            event.preventDefault();  // не перезагружать страницу
+            const button = document.getElementById("btn-login");
+            button.disabled = true;
+            try {
+                const user = await api("/api/login", {
+                    method: "POST",
+                    body: {
+                        login: document.getElementById("login-input").value.trim(),
+                        password: document.getElementById("password-input").value
+                    },
+                });
+                setUser(user);
+                window.location.href = HOME_PAGES[user.role];
+            } catch (error) {
+                showMessage("login-message", error.message);
+                button.disabled = false;
+            }
+        });
+    </script>
 </body>
 </html>
