@@ -20,10 +20,124 @@
     <script src="/js/common.js"></script>
     <script>
         const user = requireRole("student");
+        let currentStageId = null;
 
-        // Запуск страницы, если вошёл не студент, requireRole уже отправил на вход
+        // Загружает ВКР студента и рабочую область
+        async function loadThesis() {
+            const section = document.getElementById("thesis-section");
+            try {
+                const thesis = await api(`/api/students/${user.profile_id}/thesis`);
+                currentStageId = thesis.current_stage_id;
+                section.innerHTML = renderThesis(thesis);
+                
+                const form = document.getElementById("upload-form");
+                if (form) {
+                    form.addEventListener("submit", uploadFile);
+                }
+            } catch (error) {
+                // 404 — темы ещё нет
+                section.innerHTML = `
+                    <div class="card">
+                        <div class="card-body text-center py-5">
+                            <h1 class="h4">Тема ВКР ещё не выбрана</h1>
+                            <p class="text-secondary">${escapeHtml(error.message)}</p>
+                            <a href="/catalog.html" class="btn btn-primary">Перейти в каталог тем</a>
+                        </div>
+                    </div>`;
+            }
+        }
+
+        // Превращает данные ВКР в HTML + красивый прогресбар
+        function renderThesis(thesis) {
+            const approved = thesis.stages.filter(s => s.status === "approved").length;
+            const percent = Math.round(approved / thesis.stages.length * 100);
+            const stages = thesis.stages.map(s => renderStage(s, s.id === thesis.current_stage_id)).join("");
+
+            return `
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <p class="text-secondary small mb-1">Тема ВКР</p>
+                        <h1 class="h4">${escapeHtml(thesis.topic.title)}</h1>
+                        <p class="mb-3">Руководитель: ${escapeHtml(thesis.supervisor.full_name)}</p>
+                        <div class="d-flex justify-content-between small mb-1">
+                            <span>Пройдено этапов: ${approved} из ${thesis.stages.length}</span>
+                            <span>${percent}%</span>
+                        </div>
+                        <div class="progress">
+                            <div class="progress-bar bg-success" style="width: ${percent}%"></div>
+                        </div>
+                    </div>
+                </div>
+                
+                <h2 class="h5 mb-3">Этапы</h2>
+                <div class="d-flex flex-column gap-3">${stages}</div>`;
+        }
+
+        // Одна карточка этапа: статус, дедлайн, файлы и отзывы
+        function renderStage(stage, isCurrent) {
+            const overdue = stage.is_overdue ? '<span class="badge bg-danger">Просрочен</span>' : "";
+
+            const files = stage.files.map(f => `
+                <li><a href="/api/files/${f.id}">${escapeHtml(f.original_name)}</a>
+                    <span class="text-secondary small">· ${formatDate(f.uploaded_at)}</span></li>`).join("");
+
+            const reviews = stage.reviews.map(r => `
+                <div class="border-start border-3 ps-2 mb-2 ${r.decision === "approved" ? "border-success" : "border-danger"}">
+                    <div class="small text-secondary">
+                        ${r.decision === "approved" ? "Одобрено" : "На доработку"}
+                        ${r.grade ? `· оценка ${r.grade}` : ""} · ${formatDate(r.created_at)}
+                    </div>
+                    <div>${escapeHtml(r.comment || "Без комментария")}</div>
+                </div>`).join("");
+
+            // Форма загрузки — только у текущего этапа, если он открыт или на доработке
+            const canUpload = isCurrent && (stage.status === "open" || stage.status === "revision");
+            const uploadForm = canUpload ? `
+                <form id="upload-form" class="mt-3">
+                    <input type="file" class="form-control mb-2" id="upload-file" required>
+                    <button type="submit" class="btn btn-primary">Отправить на проверку</button>
+                </form>
+                <div id="upload-message" class="mt-2"></div>` : "";
+            
+
+            return `
+                <div class="card ${isCurrent ? "border border-primary" : ""}">
+                    <div class="card-body">
+                        <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+                            <h3 class="h6 mb-0">${stage.order_num}. ${escapeHtml(stage.name)}</h3>
+                            <div class="d-flex gap-2">${overdue} ${statusBadge(STAGE_STATUSES, stage.status)}</div>
+                        </div>
+                        <p class="small text-secondary mb-2">Дедлайн: ${formatDate(stage.deadline)}</p>
+                        ${files ? `<p class="small mb-1">Файлы:</p><ul class="small">${files}</ul>` : ""}
+                        ${reviews ? `<p class="small mb-1">Отзывы руководителя:</p>${reviews}` : ""}
+                        ${uploadForm}
+                    </div>
+                </div>`;
+        }
+
+
+        // Загрузка файла текущего этапа
+        async function uploadFile(event) {
+            event.preventDefault();
+
+            const data = new FormData();
+            data.append("student_id", user.profile_id);
+            data.append("file", document.getElementById("upload-file").files[0]);
+
+            try {
+                await api(`/api/stages/${currentStageId}/files`, { method: "POST", body: data });
+                showMessage("page-message", "Файл отправлен на проверку", "success");
+                loadThesis();
+            } catch (error) {
+                showMessage("upload-message", error.message);
+            }
+        }
+
+
+        // Запуск страницы. Если вошёл не студент, requireRole уже отправил на вход
         if (user) {
             renderHeader();
+            loadThesis();
         }
     </script>
 </body>

@@ -133,3 +133,27 @@ function showMessage(containerId, text, type = "danger") {
     document.getElementById(containerId).innerHTML =
         `<div class="alert alert-${type}">${escapeHtml(text)}</div>`;
 }
+
+
+// Статусы
+// Подпись, цвет бейджа Bootstrap
+const STAGE_STATUSES = {
+    locked: ["Закрыт", "secondary"],
+    open: ["Открыт", "primary"],
+    submitted: ["На проверке", "warning"],
+    revision: ["На доработке", "danger"],
+    approved: ["Одобрен", "success"],
+};
+
+const REQUEST_STATUSES = {
+    pending: ["На рассмотрении", "warning"],
+    approved: ["Одобрена", "success"],
+    rejected: ["Отклонена", "secondary"],
+};
+
+// Цветной бейдж статуса
+function statusBadge(statuses, status) {
+    const [title, color] = statuses[status];
+    const textColor = color === "warning" ? "text-dark" : "";
+    return `<span class="badge bg-${color} ${textColor}">${title}</span>`;
+}

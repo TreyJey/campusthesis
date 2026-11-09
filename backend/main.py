@@ -448,7 +448,7 @@ def stage_to_dict(stage: models.ThesisStage) -> dict:
         "order_num": stage.stage_type.order_num,
         "deadline": stage.deadline,
         "status": stage.status,
-        "is_overdue": not in_work and stage.deadline < date.today(),
+        "is_overdue": in_work and stage.deadline < date.today(),
         "submitted_at": stage.submitted_at,
         "approved_at": stage.approved_at,
         "files": [
@@ -507,7 +507,7 @@ def thesis_passes_filters(
         return False
     if stage_num is not None and (current is None or current.stage_type.order_num != stage_num):
         return False
-    if overdue_only and not (current and current.deadline < date.today()):  
+    if overdue_only and not (current and stage_to_dict(current)["is_overdue"]):  
         return False
     if status is not None and thesis.status != status:
         return False
