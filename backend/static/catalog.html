@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Каталог тем — CampusThesis</title>
+    <link rel="icon" href="data:,">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app-header"></div>
+
+    <main class="container pb-5">
+        <h1 class="h3 mb-3">Каталог тем ВКР</h1>
+        <form id="filters-form" class="card mb-4">
+            <div class="card-body row g-2">
+                <div class="col-12 col-lg-4">
+                    <input type="text" class="form-control" id="filter-search" placeholder="Поиск по названию, описанию, руководителю">
+                </div>
+                <div class="col-6 col-lg-2">
+                    <select class="form-select" id="filter-direction"><option value="">Все направления</option></select>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <select class="form-select" id="filter-department"><option value="">Все кафедры</option></select>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <select class="form-select" id="filter-supervisor"><option value="">Все руководители</option></select>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <select class="form-select" id="filter-rating">
+                        <option value="">Любой рейтинг</option>
+                        <option value="3">Рейтинг от 3</option>
+                        <option value="4">Рейтинг от 4</option>
+                        <option value="4.5">Рейтинг от 4.5</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <select class="form-select" id="filter-sort">
+                        <option value="title">По названию</option>
+                        <option value="rating">По рейтингу руководителя</option>
+                        <option value="newest">Сначала новые</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-2">
+                    <button type="submit" class="btn btn-primary w-100">Найти</button>
+                </div>
+            </div>
+        </form>
+        <p class="text-secondary small" id="topics-count"></p>
+        <div class="row g-3" id="topics-list"></div>
+    </main>
+
+    <div class="modal fade" id="topic-modal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2 class="modal-title h5" id="modal-title"></h2>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body" id="modal-body"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script>
+        const user = requireRole(); // каталог смотрят все роли
+        let topics = [];            // загруженные темы
+
+        // Загружает темы и рисует карточки
+        async function loadTopics() {
+            const params = new URLSearchParams();
+
+            addParam(params, "search", "filter-search");
+            addParam(params, "direction_id", "filter-direction");
+            addParam(params, "department_id", "filter-department");
+            addParam(params, "supervisor_id", "filter-supervisor");
+            addParam(params, "min_rating", "filter-rating");
+            addParam(params, "sort", "filter-sort");
+
+            topics = await api(`/api/topics?${params}`);
+            document.getElementById("topics-count").textContent = `Найдено тем: ${topics.length}`;
+            document.getElementById("topics-list").innerHTML = topics.map(renderTopicCard).join("")
+                || '<p class="text-secondary">По вашему запросу тем не найдено.</p>';
+        }
+
+        // Рейтинг руководителя: "★ оценка (колво оценок)" или "нет оценок"
+        function renderRating(rating) {
+            return rating.average ? `★ ${rating.average} (${rating.count})` : "нет оценок";
+        }
+
+        // Одна карточка темы
+        function renderTopicCard(topic) {
+            return `
+                <div class="col-12 col-md-6 col-lg-4">
+                    <div class="card h-100">
+                        <div class="card-body d-flex flex-column">
+                            <span class="badge bg-light text-dark align-self-start mb-2">
+                                ${escapeHtml(topic.direction.code)} ${escapeHtml(topic.direction.name)}
+                            </span>
+                            <h2 class="h6">${escapeHtml(topic.title)}</h2>
+                            <p class="small text-secondary mb-2">${escapeHtml(topic.description)}</p>
+                            <p class="small mb-3 mt-auto">
+                                ${escapeHtml(topic.supervisor.full_name)}<br>
+                                <span class="text-secondary">${renderRating(topic.supervisor.rating)}</span>
+                            </p>
+                            <button class="btn btn-outline-primary btn-sm" onclick="openTopic(${topic.id})">Подробнее</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // Добавляет к адресу запроса фильтр, если поле заполнено
+        function addParam(params, name, elementId) {
+            const value = document.getElementById(elementId).value.trim();
+            if (value) params.append(name, value);
+        }
+
+        // Заполняет выпадающий список вариантами из справочника
+        function fillSelect(selectId, items, getText) {
+            const select = document.getElementById(selectId);
+            select.innerHTML += items.map(item =>
+                `<option value="${item.id}">${escapeHtml(getText(item))}</option>`).join("");
+        }
+
+        // Загружает справочники для фильтров
+        async function loadFilters() {
+            fillSelect("filter-direction", await api("/api/directions"), d => `${d.code} ${d.name}`);
+            fillSelect("filter-department", await api("/api/departments"), d => d.name);
+            fillSelect("filter-supervisor", await api("/api/supervisors"), s => s.full_name);
+        }
+
+        document.getElementById("filters-form").addEventListener("submit", (event) => {
+            event.preventDefault();
+            loadTopics();
+        });
+        document.getElementById("filters-form").addEventListener("change", loadTopics);
+
+        // Показывает окно с подробностями темы
+        function openTopic(topicId) {
+            const topic = topics.find(t => t.id === topicId);
+            document.getElementById("modal-title").textContent = topic.title;
+
+            const requestForm = user.role === "student" ? `
+                <hr>
+                <form id="request-form">
+                    <label for="request-message" class="form-label">Сообщение руководителю (необязательно)</label>
+                    <textarea class="form-control mb-2" id="request-message" rows="3"
+                              placeholder="Почему вас интересует тема, какой у вас опыт"></textarea>
+                    <button type="submit" class="btn btn-primary">Подать заявку</button>
+                </form>
+                <div id="request-message-box" class="mt-2"></div>` : "";
+
+            document.getElementById("modal-body").innerHTML = `
+                <p>${escapeHtml(topic.description)}</p>
+                <p class="mb-1"><strong>Требования:</strong> ${escapeHtml(topic.requirements || "не указаны")}</p>
+                <p class="mb-1"><strong>Направление:</strong> ${escapeHtml(topic.direction.code)} ${escapeHtml(topic.direction.name)}</p>
+                <p class="mb-1"><strong>Руководитель:</strong> ${escapeHtml(topic.supervisor.full_name)},
+                    ${escapeHtml(topic.supervisor.position)}</p>
+                <p class="mb-1"><strong>Кафедра:</strong> ${escapeHtml(topic.supervisor.department)}</p>
+                <p class="mb-0"><strong>Рейтинг руководителя:</strong> ${renderRating(topic.supervisor.rating)}</p>
+                ${requestForm}`;
+
+            const form = document.getElementById("request-form");
+            if (form) {
+                form.addEventListener("submit", (event) => sendRequest(event, topic.id));
+            }
+            bootstrap.Modal.getOrCreateInstance(document.getElementById("topic-modal")).show();
+        }
+
+        // Отправляет заявку на тему
+        async function sendRequest(event, topicId) {
+            event.preventDefault();
+            try {
+                await api("/api/topic-requests", {
+                    method: "POST",
+                    body: {
+                        student_id: user.profile_id,
+                        topic_id: topicId,
+                        message: document.getElementById("request-message").value.trim() || null,
+                    },
+                });
+                document.getElementById("request-form").remove();
+                showMessage("request-message-box", "Заявка отправлена руководителю. Статус можно посмотреть в разделе Моя ВКР.", "success");
+            } catch (error) {
+                showMessage("request-message-box", error.message);
+            }
+        }
+
+
+        
+        if (user) {
+            renderHeader();
+            loadFilters();
+            loadTopics();
+        }
+    </script>
+</body>
+</html>
