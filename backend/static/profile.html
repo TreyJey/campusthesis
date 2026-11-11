@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Профиль — CampusThesis</title>
+    <link rel="icon" href="data:,">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app-header"></div>
+
+    <main class="container pb-5">
+        <div id="page-message"></div>
+
+        <div class="row g-4">
+
+            <div class="col-12 col-lg-4">
+                <div class="card mb-4">
+                    <div class="card-body" id="profile-info"></div>
+                </div>
+
+                <form class="card" id="settings-form">
+                    <div class="card-body">
+                        <h2 class="h5 mb-3">Настройки</h2>
+                        <label for="settings-email" class="form-label">Почта</label>
+                        <input type="email" class="form-control mb-3" id="settings-email">
+
+                        <p class="mb-2">Присылать уведомления:</p>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="settings-status">
+                            <label class="form-check-label" for="settings-status">о смене статусов</label>
+                        </div>
+                        <div class="form-check">
+                            <input class="form-check-input" type="checkbox" id="settings-comments">
+                            <label class="form-check-label" for="settings-comments">о комментариях</label>
+                        </div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="settings-deadlines">
+                            <label class="form-check-label" for="settings-deadlines">о дедлайнах</label>
+                        </div>
+                        <button type="submit" class="btn btn-primary">Сохранить</button>
+                    </div>
+                </form>
+
+                <form class="card mt-4" id="password-form">
+                    <div class="card-body">
+                        <h2 class="h5 mb-3">Смена пароля</h2>
+                        <input type="password" class="form-control mb-2" id="old-password" placeholder="Старый пароль" required>
+                        <input type="password" class="form-control mb-3" id="new-password" placeholder="Новый пароль, от 6 символов"
+                               minlength="6" required>
+                        <button type="submit" class="btn btn-primary">Сменить пароль</button>
+                    </div>
+                </form>
+
+            </div>
+
+            <div class="col-12 col-lg-8">
+                <div class="d-flex justify-content-between align-items-center mb-3" id="notifications">
+                    <h2 class="h5 mb-0">Уведомления</h2>
+                    <button class="btn btn-outline-primary btn-sm" id="btn-read-all">Прочитать все</button>
+                </div>
+                <div class="list-group mb-4" id="notifications-list"></div>
+
+                <h2 class="h5 mb-3">История действий</h2>
+                <div class="list-group" id="history-list"></div>
+            </div>
+        </div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script>
+        const user = requireRole(); // профиль есть у всех ролей
+
+
+        // Профиль и настройки
+        async function loadProfile() {
+            const profile = await api(`/api/users/${user.user_id}/profile`);
+
+            // Строка с данными по роли
+            let roleInfo = "";
+            if (profile.student) {
+                roleInfo = `${escapeHtml(profile.student.group_name)}, ${profile.student.course} курс<br>
+                            ${escapeHtml(profile.student.direction)}`;
+            } else if (profile.supervisor) {
+                roleInfo = `${escapeHtml(profile.supervisor.position)}<br>${escapeHtml(profile.supervisor.department)}`;
+            }
+
+            document.getElementById("profile-info").innerHTML = `
+                <h1 class="h5 mb-1">${escapeHtml(profile.full_name)}</h1>
+                <p class="text-secondary mb-2">${ROLE_NAMES[profile.role]} · логин ${escapeHtml(profile.login)}</p>
+                <p class="small mb-0">${roleInfo}</p>`;
+
+            // Заполняем форму настроек текущими значениями
+            document.getElementById("settings-email").value = profile.email || "";
+            document.getElementById("settings-status").checked = profile.settings.notify_status;
+            document.getElementById("settings-comments").checked = profile.settings.notify_comments;
+            document.getElementById("settings-deadlines").checked = profile.settings.notify_deadlines;
+        }
+
+        async function saveSettings(event) {
+            event.preventDefault();
+            try {
+                await api(`/api/users/${user.user_id}/profile`, {
+                    method: "PATCH",
+                    body: {
+                        email: document.getElementById("settings-email").value.trim() || null,
+                        notify_status: document.getElementById("settings-status").checked,
+                        notify_comments: document.getElementById("settings-comments").checked,
+                        notify_deadlines: document.getElementById("settings-deadlines").checked,
+                    },
+                });
+                showMessage("page-message", "Настройки сохранены", "success");
+                loadHistory();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+        async function changePassword(event) {
+            event.preventDefault();
+            try {
+                await api(`/api/users/${user.user_id}/password`, {
+                    method: "POST",
+                    body: {
+                        old_password: document.getElementById("old-password").value,
+                        new_password: document.getElementById("new-password").value,
+                    },
+                });
+                document.getElementById("password-form").reset();
+                showMessage("page-message", "Пароль изменён", "success");
+                loadHistory();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+
+        //Уведомления
+        async function loadNotifications() {
+            const data = await api(`/api/users/${user.user_id}/notifications`);
+            document.getElementById("notifications-list").innerHTML = data.items.map(n => `
+                <a href="${n.link || "#"}" class="list-group-item list-group-item-action ${n.is_read ? "" : "fw-semibold"}">
+                    <div class="d-flex justify-content-between gap-2">
+                        <span>${escapeHtml(n.text)}</span>
+                        ${n.is_read ? "" : '<span class="badge bg-primary align-self-start">новое</span>'}
+                    </div>
+                    <div class="small text-secondary">${formatDate(n.created_at)}</div>
+                </a>`).join("")
+                || '<p class="text-secondary">Уведомлений нет.</p>';
+        }
+
+        async function readAll() {
+            await api(`/api/users/${user.user_id}/notifications/read-all`, { method: "POST" });
+            loadNotifications();
+            renderHeader();  // обновить счётчик на кнопке в шапке
+        }
+
+
+        // Лог
+        async function loadHistory() {
+            const records = await api(`/api/users/${user.user_id}/history`);
+            document.getElementById("history-list").innerHTML = records.map(r => `
+                <div class="list-group-item">
+                    <div>${escapeHtml(r.text)}</div>
+                    <div class="small text-secondary">${formatDate(r.created_at)}</div>
+                </div>`).join("")
+                || '<p class="text-secondary">Действий пока нет.</p>';
+        }
+
+
+        document.getElementById("settings-form").addEventListener("submit", saveSettings);
+        document.getElementById("btn-read-all").addEventListener("click", readAll);
+        document.getElementById("password-form").addEventListener("submit", changePassword);
+
+
+        if (user) {
+            renderHeader();
+            loadProfile();
+            loadNotifications();
+            loadHistory();
+        }
+    </script>
+</body>
+</html>
