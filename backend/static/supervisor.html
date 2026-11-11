@@ -14,8 +14,37 @@
     <main class="container pb-5">
         <div id="page-message"></div>
 
+        <h1 class="h4 mb-3">Мои студенты <span class="text-secondary fs-6" id="students-count"></span></h1>
+        <form id="students-filters" class="row g-2 mb-3">
+            <div class="col-12 col-md-4">
+                <input type="text" class="form-control" id="students-search" placeholder="Поиск по ФИО, группе, теме">
+            </div>
+            <div class="col-6 col-md-3">
+                <select class="form-select" id="students-stage">
+                    <option value="">Все этапы</option>
+                    <option value="1">1. План</option>
+                    <option value="2">2. Первая глава</option>
+                    <option value="3">3. Вторая глава</option>
+                    <option value="4">4. Полный текст</option>
+                    <option value="5">5. Нормоконтроль</option>
+                    <option value="6">6. Предзащита</option>
+                    <option value="7">7. Защита</option>
+                </select>
+            </div>
+            <div class="col-6 col-md-3 d-flex align-items-center">
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="students-overdue">
+                    <label class="form-check-label" for="students-overdue">Просроченные</label>
+                </div>
+            </div>
+            <div class="col-12 col-md-2">
+                <button type="submit" class="btn btn-primary w-100">Найти</button>
+            </div>
+        </form>
+        <div class="d-flex flex-column gap-3 mb-5" id="students-list"></div>
+
         <div class="d-flex justify-content-between align-items-center mb-3">
-            <h1 class="h4 mb-0">Заявки на мои темы</h1>
+            <h2 class="h4 mb-0">Заявки на мои темы</h1>
             <select class="form-select w-auto" id="requests-status">
                 <option value="pending">Новые</option>
                 <option value="">Все</option>
@@ -31,6 +60,103 @@
     <script>
         const user = requireRole("supervisor");
 
+        // "Мои студенты"
+        // Загружает студентов руководителя с фильтрами
+        async function loadStudents() {
+            const params = new URLSearchParams();
+            const search = document.getElementById("students-search").value.trim();
+            const stage = document.getElementById("students-stage").value;
+            if (search) params.append("search", search);
+            if (stage) params.append("stage_num", stage);
+            if (document.getElementById("students-overdue").checked) params.append("overdue_only", "true");
+
+            const data = await api(`/api/supervisors/${user.profile_id}/theses?${params}`);
+            document.getElementById("students-count").textContent = `занято мест: ${data.taken} из ${data.max_students}`;
+            document.getElementById("students-list").innerHTML = data.theses.map(renderStudent).join("")
+                || '<p class="text-secondary">Студентов не найдено.</p>';
+        }
+
+        // Карточка студента: тема и текущий этап
+        function renderStudent(thesis) {
+            const stage = thesis.current_stage;
+            let stageInfo = '<p class="mb-0 text-success">Все этапы пройдены</p>';
+            if (stage) {
+                const overdue = stage.is_overdue ? '<span class="badge bg-danger">Просрочен</span>' : "";
+                const lastFile = stage.files[0]
+                    ? `<p class="small mb-2">Файл: <a href="/api/files/${stage.files[0].id}">${escapeHtml(stage.files[0].original_name)}</a></p>` : "";
+                stageInfo = `
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                        <span>Этап ${stage.order_num}. ${escapeHtml(stage.name)}</span>
+                        ${statusBadge(STAGE_STATUSES, stage.status)} ${overdue}
+                    </div>
+                    <p class="small text-secondary mb-2">Дедлайн: ${formatDate(stage.deadline)}</p>
+                    ${lastFile}
+                    ${stage.status === "submitted" ? renderReviewForm(stage.id) : ""}`;
+            }
+
+            return `
+                <div class="card">
+                    <div class="card-body">
+                        <div class="fw-semibold">${escapeHtml(thesis.student.full_name)}, ${escapeHtml(thesis.student.group_name)}</div>
+                        <p class="small text-secondary mb-2">${escapeHtml(thesis.topic.title)}</p>
+                        ${stageInfo}
+                    </div>
+                </div>`;
+        }
+
+        // Форма отзыва: оценка, комментарий и две кнопки
+        function renderReviewForm(stageId) {
+            return `
+                <div class="border-top pt-2">
+                    <div class="row g-2 mb-2">
+                        <div class="col-12 col-md-3">
+                            <select class="form-select" id="grade-${stageId}">
+                                <option value="">Без оценки</option>
+                                <option value="5">5</option>
+                                <option value="4">4</option>
+                                <option value="3">3</option>
+                                <option value="2">2</option>
+                            </select>
+                        </div>
+                        <div class="col-12 col-md-9">
+                            <textarea class="form-control" id="review-comment-${stageId}" rows="2"
+                                      placeholder="Комментарий (обязателен при возврате на доработку)"></textarea>
+                        </div>
+                    </div>
+                    <button class="btn btn-success" onclick="review(${stageId}, 'approved')">Принять этап</button>
+                    <button class="btn btn-outline-danger" onclick="review(${stageId}, 'revision')">На доработку</button>
+                </div>`;
+        }
+
+        // Отправляет отзыв по этапу
+        async function review(stageId, decision) {
+            const grade = document.getElementById(`grade-${stageId}`).value;
+            try {
+                await api(`/api/stages/${stageId}/reviews`, {
+                    method: "POST",
+                    body: {
+                        supervisor_id: user.profile_id,
+                        decision: decision,
+                        grade: grade ? Number(grade) : null,
+                        comment: document.getElementById(`review-comment-${stageId}`).value.trim() || null,
+                    },
+                });
+                const text = decision === "approved" ? "Этап принят, следующий этап открыт" : "Этап возвращён на доработку";
+                showMessage("page-message", text, "success");
+                loadStudents();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+        document.getElementById("students-filters").addEventListener("submit", (event) => {
+            event.preventDefault();
+            loadStudents();
+        });
+        document.getElementById("students-filters").addEventListener("change", loadStudents);
+
+
+        // "Заявки на мои темы"
         // Загружает заявки руководителя с выбранным статусом
         async function loadRequests() {
             const status = document.getElementById("requests-status").value;
@@ -102,6 +228,7 @@
         if (user) {
             renderHeader();
             loadRequests();
+            loadStudents();
         }
     </script>
 </body>
