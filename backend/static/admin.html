@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Все ВКР — CampusThesis</title>
+    <link rel="icon" href="data:,">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app-header"></div>
+
+    <main class="container pb-5">
+        <div id="page-message"></div>
+        <h1 class="h4 mb-3">Все ВКР <span class="text-secondary fs-6" id="theses-count"></span></h1>
+
+        <form id="filters-form" class="card mb-4">
+            <div class="card-body row g-2">
+                <div class="col-12 col-lg-4">
+                    <input type="text" class="form-control" id="filter-search" placeholder="Поиск по ФИО, группе, теме">
+                </div>
+                <div class="col-6 col-lg-4">
+                    <select class="form-select" id="filter-direction"><option value="">Все направления</option></select>
+                </div>
+                <div class="col-6 col-lg-4">
+                    <select class="form-select" id="filter-supervisor"><option value="">Все руководители</option></select>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <select class="form-select" id="filter-stage">
+                        <option value="">Все этапы</option>
+                        <option value="1">1. План</option>
+                        <option value="2">2. Первая глава</option>
+                        <option value="3">3. Вторая глава</option>
+                        <option value="4">4. Полный текст</option>
+                        <option value="5">5. Нормоконтроль</option>
+                        <option value="6">6. Предзащита</option>
+                        <option value="7">7. Защита</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <select class="form-select" id="filter-status">
+                        <option value="">Любой статус</option>
+                        <option value="in_progress">В работе</option>
+                        <option value="defended">Защищена</option>
+                    </select>
+                </div>
+                <div class="col-6 col-lg-3 d-flex align-items-center">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="filter-overdue">
+                        <label class="form-check-label" for="filter-overdue">Только просроченные</label>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3">
+                    <button type="submit" class="btn btn-primary w-100">Найти</button>
+                </div>
+            </div>
+        </form>
+
+        <div class="d-flex flex-column gap-3" id="theses-list"></div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script>
+        const user = requireRole("admin");
+
+
+        function addParam(params, name, elementId) {
+            const value = document.getElementById(elementId).value.trim();
+            if (value) params.append(name, value);
+        }
+
+        async function loadTheses() {
+            const params = new URLSearchParams();
+            params.append("admin_id", user.user_id);
+            addParam(params, "search", "filter-search");
+            addParam(params, "direction_id", "filter-direction");
+            addParam(params, "supervisor_id", "filter-supervisor");
+            addParam(params, "stage_num", "filter-stage");
+            addParam(params, "status", "filter-status");
+            if (document.getElementById("filter-overdue").checked) params.append("overdue_only", "true");
+
+            const data = await api(`/api/admin/theses?${params}`);
+            document.getElementById("theses-count").textContent = `найдено: ${data.theses.length}`;
+            document.getElementById("theses-list").innerHTML = data.theses.map(renderThesis).join("")
+                || '<p class="text-secondary">ВКР не найдено.</p>';
+        }
+
+        function renderThesis(thesis) {
+            const stage = thesis.current_stage;
+            let stageInfo = '<p class="mb-0 text-success">Все этапы пройдены, ВКР защищена</p>';
+            if (stage) {
+                const overdue = stage.is_overdue ? '<span class="badge bg-danger">Просрочен</span>' : "";
+                stageInfo = `
+                    <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
+                        <span>Этап ${stage.order_num}. ${escapeHtml(stage.name)}</span>
+                        ${statusBadge(STAGE_STATUSES, stage.status)} ${overdue}
+                    </div>
+                    <p class="small text-secondary mb-2">Дедлайн: ${formatDate(stage.deadline)}</p>
+                    ${renderDeadlineForm(stage.id)}`;
+            }
+
+            return `
+                <div class="card">
+                    <div class="card-body">
+                        <div class="fw-semibold">${escapeHtml(thesis.student.full_name)}, ${escapeHtml(thesis.student.group_name)}</div>
+                        <p class="small text-secondary mb-1">${escapeHtml(thesis.topic.title)}</p>
+                        <p class="small mb-2">Руководитель: ${escapeHtml(thesis.supervisor.full_name)}
+                            (${escapeHtml(thesis.supervisor.department)})</p>
+                        ${stageInfo}
+                    </div>
+                </div>`;
+        }
+
+        // Форма переноса дедлайна текущего этапа
+        function renderDeadlineForm(stageId) {
+            return `
+                <div class="border-top pt-2">
+                    <div class="row g-2">
+                        <div class="col-12 col-md-3">
+                            <input type="date" class="form-control" id="deadline-${stageId}">
+                        </div>
+                        <div class="col-12 col-md-6">
+                            <input type="text" class="form-control" id="reason-${stageId}" placeholder="Причина (необязательно)">
+                        </div>
+                        <div class="col-12 col-md-3">
+                            <button class="btn btn-outline-primary w-100" onclick="changeDeadline(${stageId})">Перенести дедлайн</button>
+                        </div>
+                    </div>
+                </div>`;
+        }
+
+        // Переносит дедлайн этапа
+        async function changeDeadline(stageId) {
+            const newDeadline = document.getElementById(`deadline-${stageId}`).value;
+            if (!newDeadline) {
+                showMessage("page-message", "Выберите новую дату дедлайна");
+                return;
+            }
+            try {
+                await api(`/api/admin/stages/${stageId}/deadline`, {
+                    method: "PATCH",
+                    body: {
+                        admin_id: user.user_id,
+                        new_deadline: newDeadline,
+                        reason: document.getElementById(`reason-${stageId}`).value.trim() || null,
+                    },
+                });
+                showMessage("page-message", "Дедлайн перенесен, студент получил уведомление", "success");
+                loadTheses();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+
+        // Фильтры
+        function fillSelect(selectId, items, getText) {
+            const select = document.getElementById(selectId);
+            select.innerHTML += items.map(item =>
+                `<option value="${item.id}">${escapeHtml(getText(item))}</option>`).join("");
+        }
+
+        async function loadFilters() {
+            fillSelect("filter-direction", await api("/api/directions"), d => `${d.code} ${d.name}`);
+            fillSelect("filter-supervisor", await api("/api/supervisors"), s => s.full_name);
+        }
+
+        document.getElementById("filters-form").addEventListener("submit", (event) => {
+            event.preventDefault();
+            loadTheses();
+        });
+        document.getElementById("filters-form").addEventListener("change", loadTheses);
+
+        if (user) {
+            renderHeader();
+            loadFilters();
+            loadTheses();
+        }
+    </script>
+</body>
+</html>
