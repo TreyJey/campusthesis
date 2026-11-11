@@ -22,6 +22,7 @@
     <script>
         const user = requireRole("student");
         let currentStageId = null;
+        let currentThesisId = null;
 
         // Загружает ВКР студента и рабочую область
         async function loadThesis() {
@@ -29,12 +30,16 @@
             try {
                 const thesis = await api(`/api/students/${user.profile_id}/thesis`);
                 currentStageId = thesis.current_stage_id;
+                currentThesisId = thesis.id;
                 section.innerHTML = renderThesis(thesis);
                 
                 const form = document.getElementById("upload-form");
                 if (form) {
                     form.addEventListener("submit", uploadFile);
                 }
+
+                document.getElementById("rating-form").addEventListener("submit", rateSupervisor);
+
             } catch (error) {
                 // 404 — темы ещё нет
                 section.innerHTML = `
@@ -70,6 +75,7 @@
                     </div>
                 </div>
                 
+                ${renderRatingForm(thesis)}
                 <h2 class="h5 mb-3">Этапы</h2>
                 <div class="d-flex flex-column gap-3">${stages}</div>`;
         }
@@ -114,6 +120,58 @@
                         ${uploadForm}
                     </div>
                 </div>`;
+        }
+
+
+        // Блох оценки руководителя: текущая оценка и форма
+        function renderRatingForm(thesis) {
+            const current = thesis.rating
+                ? `<p class="small mb-2">Ваша оценка: ★ ${thesis.rating.score} из 5</p>` : "";
+            return `
+                <div class="card mb-4">
+                    <div class="card-body">
+                        <h2 class="h6 mb-2">Оценка руководителя</h2>
+                        ${current}
+                        <form id="rating-form" class="row g-2">
+                            <div class="col-12 col-md-3">
+                                <select class="form-select" id="rating-score">
+                                    <option value="5">5 — отлично</option>
+                                    <option value="4">4 — хорошо</option>
+                                    <option value="3">3 — нормально</option>
+                                    <option value="2">2 — плохо</option>
+                                    <option value="1">1 — очень плохо</option>
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <input type="text" class="form-control" id="rating-comment" placeholder="Отзыв (необязательно)">
+                            </div>
+                            <div class="col-12 col-md-3">
+                                <button type="submit" class="btn btn-outline-primary w-100">
+                                    ${thesis.rating ? "Изменить оценку" : "Оценить"}
+                                </button>
+                            </div>
+                        </form>
+                    </div>
+                </div>`;
+        }
+
+        // Отправляет оценку руководителя
+        async function rateSupervisor(event) {
+            event.preventDefault();
+            try {
+                await api(`/api/theses/${currentThesisId}/rating`, {
+                    method: "PUT",
+                    body: {
+                        student_id: user.profile_id,
+                        score: Number(document.getElementById("rating-score").value),
+                        comment: document.getElementById("rating-comment").value.trim() || null,
+                    },
+                });
+                showMessage("page-message", "Спасибо, оценка сохранена", "success");
+                loadThesis();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
         }
 
 
