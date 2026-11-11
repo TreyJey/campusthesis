@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Мои студенты — CampusThesis</title>
+    <link rel="icon" href="data:,">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="/css/style.css" rel="stylesheet">
+</head>
+<body>
+    <div id="app-header"></div>
+
+    <main class="container pb-5">
+        <div id="page-message"></div>
+
+        <div class="d-flex justify-content-between align-items-center mb-3">
+            <h1 class="h4 mb-0">Заявки на мои темы</h1>
+            <select class="form-select w-auto" id="requests-status">
+                <option value="pending">Новые</option>
+                <option value="">Все</option>
+                <option value="approved">Одобренные</option>
+                <option value="rejected">Отклонённые</option>
+            </select>
+        </div>
+        <div class="d-flex flex-column gap-3" id="requests-list"></div>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/common.js"></script>
+    <script>
+        const user = requireRole("supervisor");
+
+        // Загружает заявки руководителя с выбранным статусом
+        async function loadRequests() {
+            const status = document.getElementById("requests-status").value;
+            const address = status
+                ? `/api/supervisors/${user.profile_id}/requests?status=${status}`
+                : `/api/supervisors/${user.profile_id}/requests`;
+            const requests = await api(address);
+
+            document.getElementById("requests-list").innerHTML = requests.map(renderRequest).join("")
+                || '<p class="text-secondary">Заявок нет.</p>';
+        }
+
+        // Одна карточка заявки
+        function renderRequest(req) {
+            const message = req.message
+                ? `<p class="mb-2">Сообщение: ${escapeHtml(req.message)}</p>` : "";
+            const comment = req.supervisor_comment
+                ? `<p class="small text-secondary mb-0">Ваш комментарий: ${escapeHtml(req.supervisor_comment)}</p>` : "";
+
+            // Кнопки решения только у заявок, которые ждут ответа
+            const actions = req.status === "pending" ? `
+                <textarea class="form-control mb-2" id="comment-${req.id}" rows="2"
+                          placeholder="Комментарий студенту (необязательно)"></textarea>
+                <button class="btn btn-success" onclick="decide(${req.id}, 'approved')">Одобрить</button>
+                <button class="btn btn-outline-danger" onclick="decide(${req.id}, 'rejected')">Отклонить</button>` : "";
+
+            return `
+                <div class="card">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                            <div>
+                                <div class="fw-semibold">${escapeHtml(req.student.full_name)}, ${escapeHtml(req.student.group_name)}</div>
+                                <div class="small text-secondary">
+                                    ${escapeHtml(req.topic.title)} · подана ${formatDate(req.created_at)}
+                                </div>
+                            </div>
+                            ${statusBadge(REQUEST_STATUSES, req.status)}
+                        </div>
+                        ${message}
+                        ${comment}
+                        ${actions}
+                    </div>
+                </div>`;
+        }
+
+        // Одобряет или отклоняет заявку
+        async function decide(requestId, decision) {
+            try {
+                await api(`/api/topic-requests/${requestId}`, {
+                    method: "PATCH",
+                    body: {
+                        supervisor_id: user.profile_id,
+                        decision: decision,
+                        comment: document.getElementById(`comment-${requestId}`).value.trim() || null,
+                    },
+                });
+                const text = decision === "approved"
+                    ? "Заявка одобрена, у студента появилась рабочая область ВКР"
+                    : "Заявка отклонена";
+                showMessage("page-message", text, "success");
+                loadRequests();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+        document.getElementById("requests-status").addEventListener("change", loadRequests);
+
+        if (user) {
+            renderHeader();
+            loadRequests();
+        }
+    </script>
+</body>
+</html>

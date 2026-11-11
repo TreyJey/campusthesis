@@ -14,6 +14,7 @@
     <main class="container pb-5">
         <div id="page-message"></div>
         <section id="thesis-section"></section>
+        <section id="requests-section" class="mt-4"></section>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -134,10 +135,37 @@
         }
 
 
+        // Загружает заявки студента и рисует списком
+        async function loadRequests() {
+            const requests = await api(`/api/students/${user.profile_id}/requests`);
+            if (requests.length === 0) return;
+
+            const items = requests.map(req => `
+                <div class="list-group-item">
+                    <div class="d-flex justify-content-between align-items-start gap-2">
+                        <div>
+                            <div class="fw-semibold">${escapeHtml(req.topic.title)}</div>
+                            <div class="small text-secondary">
+                                ${escapeHtml(req.supervisor.full_name)} · подана ${formatDate(req.created_at)}
+                            </div>
+                        </div>
+                        ${statusBadge(REQUEST_STATUSES, req.status)}
+                    </div>
+                    ${req.supervisor_comment
+                        ? `<div class="small mt-2">Комментарий: ${escapeHtml(req.supervisor_comment)}</div>` : ""}
+                </div>`).join("");
+
+            document.getElementById("requests-section").innerHTML = `
+                <h2 class="h5 mb-3">Мои заявки</h2>
+                <div class="list-group">${items}</div>`;
+        }
+
+
         // Запуск страницы. Если вошёл не студент, requireRole уже отправил на вход
         if (user) {
             renderHeader();
             loadThesis();
+            loadRequests();
         }
     </script>
 </body>
