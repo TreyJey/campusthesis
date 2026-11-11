@@ -18,7 +18,7 @@ Base.metadata.create_all(bind=engine)
 app = FastAPI(
     title = "CampusThesis API",
     description = "API платформы управления выпускными квалификационными работами",
-    version = "0.12.0",
+    version = "1.0.0",
 )
 
 @app.get("/api/health", tags = ["Служебная информация"])

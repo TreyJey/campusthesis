@@ -58,6 +58,50 @@
         </form>
 
         <div class="d-flex flex-column gap-3" id="theses-list"></div>
+        
+        <div class="d-flex justify-content-between align-items-center mt-5 mb-3">
+            <h2 class="h4 mb-0">Темы</h2>
+            <select class="form-select w-auto" id="topics-state">
+                <option value="">Все темы</option>
+                <option value="available">Свободные</option>
+                <option value="taken">Занятые</option>
+                <option value="archived">В архиве</option>
+            </select>
+        </div>
+
+
+        <div class="list-group" id="topics-list"></div>
+
+        
+        <form class="card mt-4" id="topic-form">
+            <div class="card-body row g-2">
+                <h2 class="h5 mb-1">Новая тема</h2>
+                <div class="col-12">
+                    <input type="text" class="form-control" id="topic-title" placeholder="Название (от 10 символов)"
+                           minlength="10" required>
+                </div>
+                <div class="col-12">
+                    <textarea class="form-control" id="topic-description" rows="3" placeholder="Описание (от 10 символов)"
+                              minlength="10" required></textarea>
+                </div>
+                <div class="col-12">
+                    <input type="text" class="form-control" id="topic-requirements" placeholder="Требования (необязательно)">
+                </div>
+                <div class="col-12 col-md-5">
+                    <select class="form-select" id="topic-supervisor" required>
+                        <option value="">Руководитель</option>
+                    </select>
+                </div>
+                <div class="col-12 col-md-5">
+                    <select class="form-select" id="topic-direction" required>
+                        <option value="">Направление</option>
+                    </select>
+                </div>
+                <div class="col-12 col-md-2">
+                    <button type="submit" class="btn btn-primary w-100">Добавить</button>
+                </div>
+            </div>
+        </form>
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
@@ -155,6 +199,88 @@
         }
 
 
+        // Архивация
+        async function loadTopics() {
+            const state = document.getElementById("topics-state").value;
+            const address = state
+                ? `/api/admin/topics?admin_id=${user.user_id}&state=${state}`
+                : `/api/admin/topics?admin_id=${user.user_id}`;
+            const data = await api(address);
+            document.getElementById("topics-list").innerHTML = data.topics.map(renderTopic).join("")
+                || '<p class="text-secondary">Тем нет.</p>';
+        }
+
+        function renderTopic(topic) {
+            let state = '<span class="badge bg-success">Свободна</span>';
+            if (topic.is_archived) {
+                state = '<span class="badge bg-secondary">В архиве</span>';
+            } else if (topic.student) {
+                state = '<span class="badge bg-primary">Занята</span>';
+            }
+            const student = topic.student ? ` · студент: ${escapeHtml(topic.student)}` : "";
+
+            // Занятую тему в архив нельзя
+            let button = "";
+            if (topic.is_archived) {
+                button = `<button class="btn btn-outline-secondary btn-sm" onclick="setArchived(${topic.id}, false)">Вернуть</button>`;
+            } else if (!topic.student) {
+                button = `<button class="btn btn-outline-secondary btn-sm" onclick="setArchived(${topic.id}, true)">В архив</button>`;
+            }
+
+            return `
+                <div class="list-group-item d-flex justify-content-between align-items-center gap-2">
+                    <div>
+                        <div>${escapeHtml(topic.title)} ${state}</div>
+                        <div class="small text-secondary">${escapeHtml(topic.supervisor.full_name)}${student}</div>
+                    </div>
+                    ${button}
+                </div>`;
+        }
+
+        // Убирает тему в архив или возвращает из него
+        async function setArchived(topicId, archived) {
+            try {
+                await api(`/api/admin/topics/${topicId}`, {
+                    method: "PATCH",
+                    body: { admin_id: user.user_id, is_archived: archived },
+                });
+                const text = archived ? "Тема убрана в архив и скрыта из каталога" : "Тема возвращена из архива";
+                showMessage("page-message", text, "success");
+                loadTopics();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+        document.getElementById("topics-state").addEventListener("change", loadTopics);
+
+        
+        // Добавляет новую тему в каталог
+        async function createTopic(event) {
+            event.preventDefault();
+            try {
+                await api("/api/admin/topics", {
+                    method: "POST",
+                    body: {
+                        admin_id: user.user_id,
+                        title: document.getElementById("topic-title").value.trim(),
+                        description: document.getElementById("topic-description").value.trim(),
+                        requirements: document.getElementById("topic-requirements").value.trim() || null,
+                        supervisor_id: Number(document.getElementById("topic-supervisor").value),
+                        direction_id: Number(document.getElementById("topic-direction").value),
+                    },
+                });
+                document.getElementById("topic-form").reset();
+                showMessage("page-message", "Тема добавлена в каталог", "success");
+                loadTopics();
+            } catch (error) {
+                showMessage("page-message", error.message);
+            }
+        }
+
+        document.getElementById("topic-form").addEventListener("submit", createTopic);
+
+
         // Фильтры
         function fillSelect(selectId, items, getText) {
             const select = document.getElementById(selectId);
@@ -163,8 +289,12 @@
         }
 
         async function loadFilters() {
-            fillSelect("filter-direction", await api("/api/directions"), d => `${d.code} ${d.name}`);
-            fillSelect("filter-supervisor", await api("/api/supervisors"), s => s.full_name);
+            const directions = await api("/api/directions");
+            const supervisors = await api("/api/supervisors");
+            fillSelect("filter-direction", directions, d => `${d.code} ${d.name}`);
+            fillSelect("filter-supervisor", supervisors, s => s.full_name);
+            fillSelect("topic-direction", directions, d => `${d.code} ${d.name}`);
+            fillSelect("topic-supervisor", supervisors, s => s.full_name);
         }
 
         document.getElementById("filters-form").addEventListener("submit", (event) => {
@@ -177,6 +307,7 @@
             renderHeader();
             loadFilters();
             loadTheses();
+            loadTopics();
         }
     </script>
 </body>

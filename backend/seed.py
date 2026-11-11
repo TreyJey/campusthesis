@@ -164,7 +164,7 @@ volkov = add_student("volkov", "Волков Артём Денисович", "Р
 zaitsev = add_student("zaitsev", "Зайцев Максим Игоревич", "РИ-410001", dir_se)
 tarasov = add_student("tarasov", "Тарасов Егор Валерьевич", "РИ-420000", dir_pi)
 dudkov = add_supervisor("dudkov", "Дудков Андрей Николаевич", "доцент", dep_phys)
-trubnikov = add_student("trubnikov", "Трубников Василий Александрович", "профессор", dep_phys)
+trubnikov = add_student("trubnikov", "Трубников Василий Александрович", "ПИ-412000", dir_phys)
 
 
 #Темы
@@ -192,7 +192,7 @@ autograder = add_topic("Система автоматической провер
 ci_cd = add_topic("CI/CD-конвейер для учебных проектов студентов",
                   "Шаблоны репозиториев с автоматической сборкой и тестами.", "Git, GitHub Actions.", smirnov, dir_se)
 phys_proc = add_topic("Моделирование физического процесса - теплопроводности в многослойных материалах",
-                      "численное моделирование распределения температуры",
+                      "Численное моделирование распределения температуры",
                       "Python, MathCad", dudkov, dir_phys)
 crm = add_topic("Внедрение CRM для отдела практик",
                 "Учёт договоров с предприятиями и распределения на практику.", None, kozlova, dir_pi)
